@@ -369,6 +369,183 @@ export function buildExtraTextures(scene) {
         ctx.stroke();
     });
 
+    /* ---------------- System 8: Thiên Thời Tứ Thời (weather + light) -------- */
+
+    // Rain streak — a soft vertical gradient filament, tinted by the emitter.
+    // Slightly slanted so "Mưa Phùn Linh Tuyền" reads as drizzle, not a wall.
+    canvasTex(scene, 'rain_streak', 32, 128, (ctx, w, h) => {
+        const g = ctx.createLinearGradient(w / 2 + 4, 0, w / 2 - 4, h);
+        g.addColorStop(0, 'rgba(190,235,255,0)');
+        g.addColorStop(0.22, 'rgba(210,242,255,0.75)');
+        g.addColorStop(0.75, 'rgba(160,215,255,0.45)');
+        g.addColorStop(1, 'rgba(160,215,255,0)');
+        ctx.strokeStyle = g;
+        ctx.lineWidth = 3.4;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(w / 2 + 5, 4);
+        ctx.lineTo(w / 2 - 5, h - 4);
+        ctx.stroke();
+        // faint halo so the drop reads against dark water too
+        ctx.strokeStyle = 'rgba(150,210,255,0.16)';
+        ctx.lineWidth = 9;
+        ctx.beginPath();
+        ctx.moveTo(w / 2 + 5, 10);
+        ctx.lineTo(w / 2 - 5, h - 12);
+        ctx.stroke();
+    });
+
+    // Water ripple — 2:1 ellipse rings, expands + fades (lake impact rings).
+    canvasTex(scene, 'ripple', 128, 64, (ctx, w, h) => {
+        const cx = w / 2, cy = h / 2;
+        const ring = (rx, ry, alpha, lw) => {
+            ctx.strokeStyle = `rgba(200,244,255,${alpha})`;
+            ctx.lineWidth = lw;
+            ctx.beginPath();
+            ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+            ctx.stroke();
+        };
+        ring(52, 24, 0.85, 3);
+        ring(36, 16, 0.55, 2.4);
+        ring(20, 9, 0.35, 2);
+        // bright center highlight (the drop's impact)
+        const g = ctx.createRadialGradient(cx, cy, 1, cx, cy, 14);
+        g.addColorStop(0, 'rgba(235,252,255,0.55)');
+        g.addColorStop(1, 'rgba(235,252,255,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, 14, 7, 0, 0, Math.PI * 2);
+        ctx.fill();
+    });
+
+    // Splash crown for the rain landing on soil (small, additive).
+    canvasTex(scene, 'rain_splash', 48, 24, (ctx, w, h) => {
+        ctx.fillStyle = 'rgba(205,245,255,0.7)';
+        for (let i = 0; i < 5; i++) {
+            const a = Math.PI + (i / 4) * Math.PI;
+            const r = 16;
+            ctx.beginPath();
+            ctx.ellipse(w / 2 + Math.cos(a) * r, h / 2 + Math.sin(a) * (h / 2) * 0.7, 2.6, 2.6, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    });
+
+    // Moon disc (drawn full, then masked by 'glow' halo in-scene).
+    canvasTex(scene, 'moon', 256, 256, (ctx, w, h) => {
+        const cx = w / 2, cy = h / 2, r = w / 2 - 10;
+        const body = ctx.createRadialGradient(cx - r * 0.25, cy - r * 0.3, r * 0.15, cx, cy, r);
+        body.addColorStop(0, '#fffdf2');
+        body.addColorStop(0.55, '#f2ead0');
+        body.addColorStop(1, '#cfc4a6');
+        ctx.fillStyle = body;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+        // maria + craters so the full moon has a face
+        ctx.fillStyle = 'rgba(150,140,116,0.35)';
+        const spots = [[-0.28, -0.16, 0.2], [0.2, 0.14, 0.26], [-0.05, 0.34, 0.14], [0.34, -0.3, 0.1], [-0.42, 0.28, 0.12]];
+        for (const [ox, oy, or_] of spots) {
+            ctx.beginPath();
+            ctx.arc(cx + ox * r, cy + oy * r, or_ * r, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    });
+
+    // Earthshine disc used to carve the crescent: painted over the moon with
+    // MULTIPLY so the covered part reads as shadowed rock, not a hole.
+    canvasTex(scene, 'moon_shade', 256, 256, (ctx, w, h) => {
+        const cx = w / 2, cy = h / 2, r = w / 2 - 6;
+        const g = ctx.createRadialGradient(cx, cy, r * 0.2, cx, cy, r);
+        g.addColorStop(0, '#5a5f78');
+        g.addColorStop(0.72, '#3b3f56');
+        g.addColorStop(1, '#8a8fa8');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+    });
+
+    // Solid wash used for the ambient day/dusk/night multiply layer: white
+    // centre, gently darkened corners so night also gets a soft vignette.
+    canvasTex(scene, 'wash', 128, 128, (ctx, w, h) => {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
+        const v = ctx.createRadialGradient(w / 2, h / 2, w * 0.2, w / 2, h / 2, w * 0.78);
+        v.addColorStop(0, 'rgba(255,255,255,0)');
+        v.addColorStop(1, 'rgba(216,214,232,0.9)');
+        ctx.fillStyle = v;
+        ctx.fillRect(0, 0, w, h);
+    });
+
+    /* ---------------- System 9: Vạn Hoa Đồ Giám (codex scroll) ------------- */
+
+    // Aged rice-paper / silk for the codex scroll body (subtle fibers +
+    // burnished edges — never pure white, the art direction wants warm ink).
+    canvasTex(scene, 'parchment', 512, 512, (ctx, w, h) => {
+        let seed = 20260908;
+        const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+        const base = ctx.createLinearGradient(0, 0, 0, h);
+        base.addColorStop(0, '#f3e6c6');
+        base.addColorStop(0.5, '#eadaba');
+        base.addColorStop(1, '#dfcda8');
+        ctx.fillStyle = base;
+        ctx.fillRect(0, 0, w, h);
+        // silk weave
+        ctx.strokeStyle = 'rgba(150,120,80,0.05)';
+        ctx.lineWidth = 1;
+        for (let y = 0; y < h; y += 4) {
+            ctx.beginPath();
+            ctx.moveTo(0, y + 0.5);
+            ctx.lineTo(w, y + 0.5);
+            ctx.stroke();
+        }
+        ctx.strokeStyle = 'rgba(255,246,222,0.06)';
+        for (let x = 0; x < w; x += 6) {
+            ctx.beginPath();
+            ctx.moveTo(x + 0.5, 0);
+            ctx.lineTo(x + 0.5, h);
+            ctx.stroke();
+        }
+        // foxing spots + fibre flecks
+        for (let i = 0; i < 90; i++) {
+            const x = rnd() * w, y = rnd() * h, r = 1 + rnd() * 7;
+            ctx.fillStyle = `rgba(${150 + rnd() * 40 | 0},${110 + rnd() * 40 | 0},60,${0.03 + rnd() * 0.05})`;
+            ctx.beginPath();
+            ctx.ellipse(x, y, r, r * (0.5 + rnd()), rnd() * 3.14, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        // burnished vignette (rolled edges catch less light)
+        const vig = ctx.createRadialGradient(w / 2, h / 2, h * 0.28, w / 2, h / 2, h * 0.78);
+        vig.addColorStop(0, 'rgba(90,60,20,0)');
+        vig.addColorStop(1, 'rgba(70,44,14,0.28)');
+        ctx.fillStyle = vig;
+        ctx.fillRect(0, 0, w, h);
+    });
+
+    // Ink-brush strip behind a poem block (calligraphy cartouche)
+    canvasTex(scene, 'ink_wash', 512, 256, (ctx, w, h) => {
+        const g = ctx.createLinearGradient(0, 0, 0, h);
+        g.addColorStop(0, 'rgba(28,20,44,0.00)');
+        g.addColorStop(0.16, 'rgba(28,20,44,0.86)');
+        g.addColorStop(0.84, 'rgba(28,20,44,0.86)');
+        g.addColorStop(1, 'rgba(28,20,44,0.00)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.ellipse(w / 2, h / 2, w / 2 - 6, h / 2 - 18, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // brush feather edge
+        ctx.strokeStyle = 'rgba(28,20,44,0.28)';
+        for (let i = 0; i < 22; i++) {
+            const t = i / 21;
+            const x = 10 + t * (w - 20);
+            ctx.lineWidth = 1 + (i % 4);
+            ctx.beginPath();
+            ctx.moveTo(x, h / 2 - (h / 2 - 22) + Math.sin(t * 9) * 5);
+            ctx.lineTo(x + 6, h / 2 - (h / 2 - 26) + Math.cos(t * 7) * 5);
+            ctx.stroke();
+        }
+    });
+
     // Soft elliptical shadow the floating island casts on the water.
     // Scene draws it at alpha ~0.45 beneath the island.
     canvasTex(scene, 'island_shadow', 512, 160, (ctx, w, h) => {
@@ -508,6 +685,73 @@ function drawFallbackIcons(scene) {
     });
 }
 
+/**
+ * Codex scroll button icon (Vạn Hoa Đồ Giám) — an ornate half-unrolled
+ * calligraphy scroll with jade rollers, a gold filigree clasp and a tiny
+ * blooming glyph inked on the paper. Used when icon_codex_scroll.png fails
+ * to load, so the HUD button is never an empty box.
+ */
+function drawCodexScrollFallback(scene) {
+    canvasTex(scene, 'icon_codex_scroll', 192, 192, (ctx, w, h) => {
+        const cx = w / 2, cy = h / 2;
+        // paper
+        const paper = ctx.createLinearGradient(0, cy - 46, 0, cy + 46);
+        paper.addColorStop(0, '#f6ead0');
+        paper.addColorStop(1, '#e2cda6');
+        ctx.fillStyle = paper;
+        ctx.strokeStyle = '#a8792f';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(cx - 58, cy - 44);
+        ctx.quadraticCurveTo(cx, cy - 54, cx + 58, cy - 44);
+        ctx.lineTo(cx + 58, cy + 44);
+        ctx.quadraticCurveTo(cx, cy + 54, cx - 58, cy + 44);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // inked flower glyph
+        ctx.strokeStyle = '#3d2a5e';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy + 26);
+        ctx.quadraticCurveTo(cx + 4, cy + 2, cx, cy - 8);
+        ctx.stroke();
+        ctx.fillStyle = '#8a5fa8';
+        for (let i = 0; i < 6; i++) {
+            const a = (i / 6) * Math.PI * 2;
+            ctx.beginPath();
+            ctx.ellipse(cx + Math.cos(a) * 12, cy - 16 + Math.sin(a) * 12, 7, 4.4, a, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.fillStyle = '#ffd76b';
+        ctx.beginPath();
+        ctx.arc(cx, cy - 16, 5, 0, Math.PI * 2);
+        ctx.fill();
+        // jade rollers with gold caps
+        const roller = (x) => {
+            const g = ctx.createLinearGradient(x - 9, 0, x + 9, 0);
+            g.addColorStop(0, '#1f6b4f');
+            g.addColorStop(0.45, '#67e0b0');
+            g.addColorStop(1, '#185b41');
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.roundRect(x - 9, cy - 58, 18, 116, 8);
+            ctx.fill();
+            ctx.strokeStyle = '#d8a24e';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            ctx.fillStyle = '#ffe3a0';
+            for (const capY of [cy - 64, cy + 58]) {
+                ctx.beginPath();
+                ctx.roundRect(x - 13, capY, 26, 10, 4);
+                ctx.fill();
+            }
+        };
+        roller(cx - 62);
+        roller(cx + 62);
+    });
+}
+
 export function ensureFallbackTextures(scene) {
     const needed = {
         bg_manor_isometric: () =>
@@ -587,6 +831,13 @@ export function ensureFallbackTextures(scene) {
     }
     if (!scene.textures.exists('icon_spirit_stone')) {
         drawSpiritStoneIconFallback(scene);
+    }
+    // System 9 — codex scroll HUD button (the real asset is the keyed PNG
+    // public/assets/images/icon_codex_scroll.png; this keeps the button
+    // beautiful even when the file is missing).
+    if (!scene.textures.exists('icon_codex_scroll')) {
+        console.warn('[TextureFactory] icon_codex_scroll missing — using procedural fallback');
+        drawCodexScrollFallback(scene);
     }
     // NOTE: bridge_pavilion is intentionally NOT fallback-generated.
     // bg_manor_isometric already contains the complete pavilion/bridge scenery.

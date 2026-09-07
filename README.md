@@ -23,22 +23,32 @@ public/assets/images/          # game art (AI-generated + keyed to clean RGBA)
   tile_soil.png                #   2:1 isometric soil diamond (128x64)
   flower_{purple,golden,cyan,emerald,rare}.png
   icon_{seed_drawer,water_bucket,search,sickle,spirit_stone}.png
+  icon_codex_scroll.png        #   Flora Codex medallion (black-screen keyed, 192px)
   npc_tien_nu.png              #   flying fairy (green-screen keyed, true alpha)
   npc_tien_nu_portrait.png     #   square head/torso crop for the dialog header
   bridge_pavilion.png          #   upper bridge pavilion decoration
 src/
-  main.js                      # Phaser.Game config (Scale.FIT, DOM container)
+  main.js                      # Phaser.Game config (Scale.FIT + CENTER_BOTH, DOM container)
   core/IsoMath.js              # pure iso projection math (unit-tested)
+  core/Layers.js               # the single render-depth plan (LAYERS.*)
   data/seedCatalog.js          # flower catalog from 04_LEVEL_DATA_LEVEL_01.md
+  data/codexLore.js            # Codex biographies, poems, mastery tiers, milestones (VN copy)
   vfx/TextureFactory.js        # procedural island/VFX textures + load fallbacks
-  audio/AudioManager.js        # WebAudio pentatonic guzheng/flute/chimes
+  vfx/WeatherView.js           # System 8 renderer: ambient wash, moon, rain, ripples
+  ui/CodexModal.js             # System 9 UI: HUD medallion + scrollable rice-paper codex
+  audio/AudioManager.js        # WebAudio pentatonic guzheng/flute/chimes + rain bed
+  systems/EventManager.js      # the game bus (on/once/off/offOwner/wildcard/history) + EVENTS
   systems/EconomySystem.js     # spirit stones, inventory, quests (unit-tested)
   systems/DialogSystem.js      # NPC dialogue tree + quest rows (unit-tested)
-  scenes/GardenScene.js        # grid, island, NPC, dialog, drawer, watering
+  systems/CodexManager.js      # System 9 state: discoveries, mastery, rewards, buffs (unit-tested)
+  systems/WeatherSystem.js     # System 8 state: phases, seasons, rain, full moon (unit-tested)
+  scenes/GardenScene.js        # grid, island, NPC, dialog, drawer, watering, bus wiring
 scripts/
   process-assets.mjs           # green/black chroma-key + trim + verify pipeline
-  test-logic.mjs               # IsoMath + search + economy + dialog unit tests
+  verify-asset-standards.mjs   # 07 catalog gate: RGBA, true alpha, corners, budgets
+  test-logic.mjs               # IsoMath + search + economy + dialog + bus/systems tests
   runtime-test.mjs             # headless Phaser boot + full gameplay test
+  render-test.mjs              # Phaser.CANVAS render path + pixel proofs
   verify-assets.mjs            # HTTP 200 check for every preloaded asset
   debug-overlay.mjs            # alignment composite over the real background
 ```
@@ -72,6 +82,37 @@ scripts/
 - **Bottom action bar** — Seeds · Ornate Sickle · Water Can: ~20% smaller
   visuals (86px rings) with generous invisible 172px touch hitboxes, gentle
   idle breathing, and press feedback (0.9× on pointerdown, bounce to 1.0×).
+- **System 8 · Thiên Thời Tứ Thời (`WeatherSystem` + `WeatherView`)** — a
+  105 s day/dusk/night cycle (45/22/38 s) drifts through the four seasons.
+  Xuân rains (Mưa Phùn Linh Tuyền): falling streaks, water ripples, splash
+  crowns over the island and a filtered-noise rain bed, and *every unwatered
+  seeded plot is watered for free* (`RAIN_IRRIGATE` → `GardenScene.rainIrrigate`).
+  Full-moon nights (every 4th day) double Harmony (`harmonyMult 2`) and boost
+  night-glow blooms. Light is applied by one full-screen wash eased with
+  `lerp` (never snapped) so the garden fades rather than flickers.
+- **System 9 · Vạn Hoa Đồ Giám (`CodexManager` + `CodexModal`)** — the jade-roller
+  scroll behind the HUD medallion (958, 322) records every species, writes a
+  poem on first bloom, tracks mastery per flower (Mộc Dịch → Linh Cản → Thiên
+  Hương at 3/8/15 harvests) and grants titles, skins and flat buffs
+  (+Harmony, +Spirit Stones, growth speed, night glow, `harmonyMult`).
+  It only ever learns from gameplay facts published on the bus
+  (`FLOWER_BLOOMED` / `FLOWER_HARVESTED`) — it never reads the scene.
+- **Event bus** — `EventManager` (`gameBus`) is the single channel between
+  systems and views (`on/once/off/offOwner/wildcard/suspend/history/clear`).
+  Systems never import each other; the scene composes their modifiers and
+  hands one object to the economy. `npm run test:logic` enforces that rule.
+- **Render-depth plan** — `src/core/Layers.js` is the only place depths are
+  defined. `LAYERS.AMBIENT` (1100) is the divider: the island, tiles, FX and
+  weather sit below it (so night dims them), and every piece of UI — hint bar,
+  HUD, action bar, drawer, dialogs, modals, codex, toasts — sits above it (so
+  ambient light can never dim a button). `npm run test:render` proves it at the
+  pixel level; `npm run test:runtime` proves the depth ordering.
+- **Desktop presentation** — the 9:16 stage is letterboxed by `Scale.FIT` +
+  `CENTER_BOTH` in WebGL, and the page shell centres the canvas with a
+  flex `margin:auto` box whose background matches the Phaser
+  `backgroundColor` (`#0b0c16`), so the FIT bars are invisible instead of a
+  white frame, and `scale.refresh()`/`updateCenter()` re-seat the canvas after
+  every window resize.
 - **06 Roadmap** — `06_EXPANDED_SYSTEMS_ROADMAP.md` details the 10 future
   systems (multi-biome realms, zen fishing, beast ranching, flower breeding,
   alchemy crafting, visitor orders, Feng Shui buffs, dynamic weather, flora
@@ -84,13 +125,21 @@ npm run test:logic    # IsoMath round-trip + search filter + economy + dialog (a
 npm run test:runtime  # headless Phaser boot of the real scene + full gameplay loop
 npm run test:render   # Phaser.CANVAS render-path check + real-asset composite proof
 npm run verify:assets # HTTP 200 check for every preloaded asset (zero 404s)
+npm run verify:format # 07 asset-standards gate (RGBA, true alpha, key residue, budgets)
 npm run overlay       # render layout check composite onto the background
+npm test              # test:logic + verify:format + test:runtime
 ```
 
 The runtime suite boots the actual `GardenScene` in `Phaser.HEADLESS` (jsdom +
 @napi-rs/canvas) and drives: drawer open → search filter → seed select → plant →
 one-click water → staggered bloom → rewarded ad → harmony gain, asserting tile
-state transitions with zero console errors. It also verifies the new systems:
+state transitions with zero console errors. It also drives the Phase-1 systems:
+codex discovery through the bus only, the scroll's open/close + masked
+scroll-clamp behaviour, the HUD medallion badge, depth ordering against
+`LAYERS.AMBIENT`, dry plots auto-watered by `forceRain`, dusk→night tinting, and
+the full-moon × codex reward composition — plus `npm run test:render` compares
+the night frame with the wash on/off to prove the world dims while the UI does
+not. It also verifies the older systems:
 NPC placement at the lower bridge deck with the ±4px sinusoidal float, the
 floating-island shadow, the 86px/172px button hitboxes with press feedback,
 and the dialog Header/Body(180px scroll)/Footer structure with live quest rows.

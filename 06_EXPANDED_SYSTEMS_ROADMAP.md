@@ -83,7 +83,7 @@
 
 - Khi xếp các loại hoa theo hình bát quái hoặc vòng tương sinh, kích hoạt luồng linh khí bao bọc đất, giảm 20% thời gian tưới nước.
 
-## 8. Khí Vận & Chu Kỳ Tiết Khí (Dynamic Weather & Day/Night)
+## 8. Khí Vận & Chu Kỳ Tiết Khí (Dynamic Weather & Day/Night) ✅ ĐÃ TRIỂN KHAI
 
 - Chu kỳ ngày/đêm nhẹ nhàng: Ban đêm đèn đá tự thắp sáng, hoa dạ quang phát sáng dịu mắt.
 
@@ -93,11 +93,32 @@
 
   + Đêm Trăng Tròn: Tăng gấp đôi điểm Hòa Hợp nhận được khi thu hoạch.
 
-## 9. Bách Thảo Đồ Giám (Codex & Collector Journal)
+**Triển khai (Phase 1):** `src/systems/WeatherSystem.js` (state) +
+`src/vfx/WeatherView.js` (render). Một chu kỳ = 105s (Ngày 45s · Hoàng Hôn 22s ·
+Đêm 38s); mỗi 4 chu kỳ sang tiết kế tiếp (Xuân → Hạ → Thu → Đông). Mưa chỉ
+xuất hiện ở Tiết Xuân (70% số ngày, 20–38s) và phát `RAIN_IRRIGATE` để
+`GardenScene.rainIrrigate()` tưới miễn phí mọi ô đã gieo. Đêm Trăng Tròn
+(theo `moonCycle`) trả `harmonyMult = 2` qua `getModifiers()`. Ánh sáng đổi
+bằng `lerp` (không nhảy cấp) trên một lớp wash toàn màn hình đặt tại
+`LAYERS.AMBIENT`, cộng thêm vầng trăng + quầng sáng, mưa xiên, gợn sóng và âm
+mưa nền. Thời tiết **không** gọi thẳng scene: mọi thứ đi qua `EventManager`.
+
+## 9. Bách Thảo Đồ Giám (Codex & Collector Journal) ✅ ĐÃ TRIỂN KHAI
 
 - Cuốn trục thư pháp lưu trữ tiểu sử, tranh vẽ của từng loài hoa đã trồng thành công.
 
 - Cột mốc sưu tập: Tặng danh hiệu, skin Liềm Ngọc Bích, skin Thùng Nước Khảm Vàng.
+
+**Triển khai (Phase 1):** `src/systems/CodexManager.js` (state + buff) +
+`src/ui/CodexModal.js` (nút trục trên HUD tại (958,322) và overlay trục giấy dó
+cuộn dọc được) + `src/data/codexLore.js` (toàn bộ văn bản Việt: tiểu sử, thơ
+Thất Ngôn, bậc thạo, mốc thưởng). Hệ thống học từ gameplay qua bus
+(`FLOWER_BLOOMED`, `FLOWER_HARVESTED`) — không đọc scene. Bậc thạo
+Mộc Dịch/Linh Cản/Thiên Hương ở 3/8/15 lượt thu hoạch; mốc 1/3/4/5/10/15/20
+loài tặng danh hiệu, skin Liềm Ngọc Bích · Thùng Nước Khảm Vàng, và
+`harmonyMult`/`growthMult`. `EconomySystem.harvestFlower(seedId, modifiers)`
+nhận buff ghép từ **cả** codex **lẫn** thời tiết, nên hai hệ thống không cần
+biết nhau. Trạng thái lưu/nạp bằng `serialize()/deserialize()`.
 
 ## 10. Tích Lũy Nhàn Rỗi (Idle Zen Automation)
 

@@ -48,6 +48,7 @@ export const NPC_DIALOGUE = {
         choices: [
             { text: 'Tiên Nữ có nhiệm vụ gì cho ta?', next: 'quest_offer' },
             { text: 'Ta muốn nghe về hoa viên.', next: 'lore_garden' },
+            { text: 'Chỉ ta xem Vạn Hoa Đồ Giám.', next: 'explain_codex' },
             { text: 'Tạm biệt.', next: 'farewell' },
         ],
     },
@@ -58,6 +59,15 @@ export const NPC_DIALOGUE = {
         choices: [
             { text: 'Ta sẽ gieo trồng ngay!', next: 'quest_offer' },
             { text: 'Nơi này thật đẹp...', next: 'lore_garden' },
+        ],
+    },
+
+    explain_codex: {
+        id: 'explain_codex',
+        text: 'Vạn Hoa Đồ Giám là cuộn trục thư ghi lại mọi loài hoa ngươi đã trồng thành công: tranh vẽ, tiểu sử, và một bài thơ cho từng loài. Sưu tập càng đủ, trục thư càng ban nhiều linh khí — danh hiệu, skin Liềm Ngọc Bích và Thùng Nước Khảm Vàng đều nằm trong đó ✦',
+        choices: [
+            { text: 'Mở Trục Thư ngay ✦', next: 'farewell', action: 'open_codex' },
+            { text: 'Để sau, ta trồng hoa đã.', next: 'farewell' },
         ],
     },
 

@@ -1,10 +1,16 @@
 import Phaser from 'phaser';
 import { IsoMath } from '../core/IsoMath.js';
+import { LAYERS } from '../core/Layers.js';
 import { SEED_CATALOG, SEED_BY_ID, normalizeText } from '../data/seedCatalog.js';
 import { buildExtraTextures, ensureFallbackTextures } from '../vfx/TextureFactory.js';
+import { WeatherView } from '../vfx/WeatherView.js';
 import AudioManager from '../audio/AudioManager.js';
 import { EconomySystem, SEED_RARITY } from '../systems/EconomySystem.js';
 import { DialogSystem, DIALOG_FONT } from '../systems/DialogSystem.js';
+import { EventManager, EVENTS } from '../systems/EventManager.js';
+import { CodexManager } from '../systems/CodexManager.js';
+import { WeatherSystem, PHASE, CONDITION } from '../systems/WeatherSystem.js';
+import { CodexModal } from '../ui/CodexModal.js';
 
 const W = 1080;
 const H = 1920;
@@ -26,9 +32,13 @@ const C = {
     text: '#ffe9c4',
 };
 
-/* Depth plan: bg -100, platform -60, tiles ~910..1078, petals 1080+,
-   hint 4/5, chip 90, action bar 120, drawer 1200, modal 1500, npc 200, dialog 1400. */
-const D = { TILES: 910, PETALS: 1080, CHIP: 90, BAR: 120, DRAWER: 1200, MODAL: 1500, NPC: 200, DIALOG: 1400 };
+/* Depth plan lives in src/core/Layers.js (shared with the weather view and the
+   codex modal). Short alias kept for readability of the existing call sites:
+   bg -100, platform -60, tiles ~910..1078, petals 1080+, weather FX 1088+,
+   ★ AMBIENT wash 1100 (world below / UI above), hint 1125, chip 1128,
+   HUD 1130, action bar 1140, drawer 1200, dialog 1400, modal 1500,
+   codex 1550, toast 1600, npc 200. */
+const D = LAYERS;
 
 /* pentatonic walk for bloom chimes (C major pentatonic, 2 octaves) */
 const SEED_CHIME_BASE = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5, 1174.66, 1318.51, 1567.98, 1760.0];
@@ -93,6 +103,14 @@ export default class GardenScene extends Phaser.Scene {
         this.gestureStartX = 0;
         this.gestureStartY = 0;
         this.lastDragTile = null;
+        /* Phase-1 systems (all talk to each other through this.bus only) */
+        this.bus = null;          // EventManager — the single inter-system channel
+        this.codex = null;        // System 9: Vạn Hoa Đồ Giám (state + rules)
+        this.codexModal = null;   // System 9: scroll UI + HUD button
+        this.weather = null;      // System 8: Thiên Thời Tứ Thời (simulation)
+        this.weatherView = null;  // System 8: ambient light / rain renderer
+        this.codexBuffs = null;   // last aggregated codex buffs
+        this.rainWatering = false;
     }
 
     /* ============================ PRELOAD ============================ */
@@ -116,6 +134,7 @@ export default class GardenScene extends Phaser.Scene {
             'icon_spirit_stone',
             'npc_tien_nu',
             'npc_tien_nu_portrait',
+            'icon_codex_scroll',
         ];
         for (const a of assets) {
             this.load.image(a, `./assets/images/${a}.png`);
@@ -142,13 +161,26 @@ export default class GardenScene extends Phaser.Scene {
         buildExtraTextures(this);
         ensureFallbackTextures(this);
 
+        /* ---------------- systems + the shared event bus ----------------
+           One EventManager instance is created here and handed to every
+           system/view; no system imports another one. Publish → subscribe is
+           the only allowed channel between them (see src/systems/EventManager). */
+        this.bus = new EventManager({ label: 'GardenScene' });
+
         // Initialize economy and dialog systems
         this.economy = new EconomySystem();
         this.economy.init();
         this.dialog = new DialogSystem();
 
+        // System 9 — Vạn Hoa Đồ Giám: records blooms/harvests off the bus
+        this.codex = new CodexManager().bind(this.bus);
+        this.codexBuffs = this.codex.getBuffs();
+
+        // System 8 — Thiên Thời Tứ Thời: day/night + spring rain simulation
+        this.weather = new WeatherSystem().bind(this.bus);
+
         // Background covers 1080x1920
-        this.add.image(W / 2, H / 2, 'bg_manor_isometric').setDisplaySize(W, H).setDepth(-100);
+        this.add.image(W / 2, H / 2, 'bg_manor_isometric').setDisplaySize(W, H).setDepth(D.BG);
 
         this.audio = new AudioManager(this);
         this.input.once('pointerdown', () => {
@@ -164,15 +196,244 @@ export default class GardenScene extends Phaser.Scene {
         this.createDrawer();
         this.createModal();
         this.createDialogBox();
+
+        // weather renderer (ambient wash + rain + moon) and the codex scroll
+        this.weatherView = new WeatherView(this, this.weather, this.bus).create();
+        this.createWeatherChip();
+        this.codexModal = new CodexModal(this, { codex: this.codex, bus: this.bus, audio: this.audio }).create();
+
         this.createMist();
         this.createParticleEmitters();
         this.createBloomRadiance();
         this.setupGestures();
+        this.subscribeToBus();
 
         this.updateHint();
         this.updateHud();
+        this.updateWeatherHud();
+        this.applyCodexBuffs();
         this.setupDialogInput();
     }
+
+    /* ==================== SYSTEM WIRING (EventManager) ====================
+       Everything below is a bus subscriber or publisher: GardenScene never
+       calls into CodexManager/WeatherSystem internals to make another system
+       react — it publishes facts and listens for them.                       */
+    subscribeToBus() {
+        const b = this.bus;
+        // System 8 gameplay buff: rain waters every unwatered plot for free.
+        b.on(EVENTS.RAIN_IRRIGATE, (p) => this.rainIrrigate(p), { owner: 'garden' });
+        // Ambient lamp level (0..1) → stone lanterns + night dew effects.
+        b.on(EVENTS.WEATHER_LAMP_LEVEL, (p) => this.onLampLevel(p), { owner: 'garden' });
+        // Codex rewards: milestone harmony grants and tool skins.
+        b.on(EVENTS.CODEX_MILESTONE, (p) => this.onCodexMilestone(p), { owner: 'garden' });
+        // Any codex change refreshes the buff snapshot the scene reads.
+        b.on(EVENTS.CODEX_BUFFS_CHANGED, () => this.applyCodexBuffs(), { owner: 'garden' });
+        b.on(EVENTS.CODEX_ENTRY_UPDATED, () => this.applyCodexBuffs(), { owner: 'garden' });
+        // UI intents coming from other systems (NPC dialog → codex scroll)
+        b.on(EVENTS.CODEX_OPEN_REQUEST, () => this.openCodex(), { owner: 'garden' });
+    }
+
+    /** Tear every system down with the scene (bus listeners included). */
+    shutdown() {
+        this.codexModal?.destroy();
+        this.weatherView?.destroy();
+        this.codex?.unbind();
+        this.weather?.unbind();
+        this.bus?.clear();
+        this.audio?.setRain?.(false);
+    }
+
+    /** Re-read the aggregated codex buffs (harvest multipliers + skins). */
+    applyCodexBuffs() {
+        this.codexBuffs = this.codex ? this.codex.getBuffs() : null;
+        if (this.codexModal) this.codexModal.updateBadge();
+        this.applyCodexSkins();
+    }
+
+    /** Milestone rewards from the codex: +harmony grants and tool skins. */
+    onCodexMilestone({ rewards = [], title }) {
+        for (const r of rewards) {
+            if (r.type === 'harmony' && r.amount) {
+                this.economy.harmony += r.amount;
+                this.bus.emit(EVENTS.CURRENCY_CHANGED, { source: 'codex-milestone', title });
+            }
+        }
+        this.harmony = this.economy.harmony;
+        this.updateHud();
+        this.applyCodexSkins();
+    }
+
+    /**
+     * Codex skins (06 roadmap #9): Liềm Ngọc Bích / Thùng Nước Khảm Vàng.
+     * Applied to the bottom action bar so a collection milestone is visible.
+     */
+    applyCodexSkins() {
+        const unlocked = {
+            sickle_jade: this.codex?.hasSkin('sickle_jade') ?? false,
+            bucket_gold: this.codex?.hasSkin('bucket_gold') ?? false,
+        };
+        if (unlocked.sickle_jade && this.harvestAllBtn) {
+            this.harvestAllBtn.tint = 0x9fe8c8;
+            if (this.harvestAllBtn.inner?.list?.[0]?.icon) this.harvestAllBtn.inner.list[0].icon.setTint(0xbff2d8);
+        }
+        if (unlocked.bucket_gold && this.waterBtn) {
+            this.waterBtn.tint = 0xffe3a0;
+            if (this.waterBtn.inner?.list?.[0]?.icon) this.waterBtn.inner.list[0].icon.setTint(0xffe9b0);
+        }
+        this.skins = unlocked;
+        return unlocked;
+    }
+
+    /**
+     * Ambient light eased by the weather view (0 = full day, 1 = deep night).
+     * The garden reacts: every bloom's halo lifts, the island aura glows and
+     * the stone runes read brighter — "đèn đá tự thắp sáng" without a relight.
+     */
+    onLampLevel({ level }) {
+        const v = Phaser.Math.Clamp(level ?? 0, 0, 1);
+        const prev = this.lampLevel ?? 0;
+        this.lampLevel = v;
+        if (Math.abs(v - prev) < 0.01) return;
+        // island aura + runes brighten after dusk
+        this.islandAura?.setAlpha(0.12 + v * 0.26).setTint(v > 0.5 ? 0x9fd8ff : 0x8f7ae0);
+        // blooms radiate more at night
+        for (const tile of this.tiles.flat()) {
+            const glow = tile.gridData.bloomGlow;
+            if (!glow || !glow.active) continue;
+            const nightGlow = this.codexBuffs?.nightGlowSeeds?.includes(tile.gridData.seedId);
+            glow.setAlpha(0.18 + v * 0.2 + (nightGlow ? 0.12 : 0));
+        }
+    }
+
+    /* Per-frame: advance the sky, then let the weather view ease toward it. */
+    update(time, delta) {
+        // Scene chatter (the hint line) steps aside whenever a full-screen
+        // overlay owns the stage, so it can never read through a scroll.
+        const blocked = this.uiBlocked();
+        if (blocked !== this._overlayChrome) {
+            this._overlayChrome = blocked;
+            if (this.hintBg) this.hintBg.setVisible(!blocked);
+            if (this.hintText) this.hintText.setVisible(!blocked);
+        }
+        if (!this.weather) return;
+        const changes = this.weather.tick(delta);
+        this.weatherView?.update(delta);
+        if (changes?.phaseChanged || changes?.conditionChanged) this.updateWeatherHud();
+    }
+
+    /* =========================== WEATHER HUD CHIP ===========================
+       Compact "Tiên Giới Lịch" card under the hint bar: season · condition ·
+       phase, plus the active buff line (rain irrigation / full-moon harmony). */
+    createWeatherChip() {
+        this.weatherChip = this.add.container(258, 302).setDepth(D.HUD);
+        this.weatherChipBg = this.add.graphics();
+        this.weatherChipTitle = this.add.text(-172, -18, '', {
+            fontFamily: DIALOG_FONT, fontSize: '21px', color: '#efe0ff', fontStyle: 'bold',
+            stroke: '#1b1140', strokeThickness: 4,
+        });
+        this.weatherChipBuff = this.add.text(-172, 8, '', {
+            fontFamily: DIALOG_FONT, fontSize: '17px', color: '#aef4ff',
+            stroke: '#1b1140', strokeThickness: 4,
+        });
+        this.weatherChip.add([this.weatherChipBg, this.weatherChipTitle, this.weatherChipBuff]);
+        const zone = this.add.zone(0, 0, 400, 84).setInteractive();
+        zone.on('pointerdown', () => {
+            this.audio.click();
+            const info = this.weather.getSummary();
+            this.flashHint(`Thiên Thời: ${info} · ${this.weather.getAmbient().description}`);
+        });
+        this.weatherChip.add(zone);
+        this.drawWeatherChip();
+    }
+
+    drawWeatherChip() {
+        if (!this.weatherChipBg) return;
+        const a = this.weather.getAmbient();
+        const raining = a.condition === CONDITION.SPRING_RAIN;
+        const bg = this.weatherChipBg;
+        bg.clear();
+        bg.fillStyle(0x1a0f2e, raining ? 0.9 : 0.82);
+        bg.fillRoundedRect(-186, -34, 420, 68, 16);
+        bg.lineStyle(2, raining ? C.cyan : C.gold, raining ? 0.85 : 0.55);
+        bg.strokeRoundedRect(-186, -34, 420, 68, 16);
+        // phase glyph: sun / dusk arc / moon
+        const g = 152;
+        bg.fillStyle(0x0b0c16, 0.6);
+        bg.fillCircle(g, 0, 22);
+        if (a.phase === PHASE.DAY) {
+            bg.fillStyle(0xffd97a, 1);
+            bg.fillCircle(g, 0, 11);
+        } else if (a.phase === PHASE.DUSK) {
+            bg.fillStyle(0xff9550, 1);
+            bg.fillCircle(g, 3, 11);
+            bg.fillStyle(0x1a0f2e, 1);
+            bg.fillCircle(g, -13, 12);
+        } else {
+            bg.fillStyle(0xe6ecff, 1);
+            bg.fillCircle(g, 0, 11);
+            bg.fillStyle(0x0b0c16, 1);
+            bg.fillCircle(g - 7, -4, 9);
+        }
+        if (raining) {
+            bg.fillStyle(0xaef4ff, 0.95);
+            for (let i = 0; i < 3; i++) bg.fillCircle(g - 12 + i * 12, 13 + (i % 2) * 4, 2.6);
+        }
+        this.weatherChipTitle.setText(`${a.season.name} · ${a.conditionLabel}`);
+        const mod = this.weather.getModifiers();
+        const buffs = [];
+        if (mod.autoWater) buffs.push('Mưa tưới miễn phí ✦');
+        if (mod.harmonyMult > 1) buffs.push(`Trăng tròn ×${mod.harmonyMult} ✿`);
+        this.weatherChipBuff.setText(buffs.length ? buffs.join(' · ') : a.phaseLabel);
+    }
+
+    /** Refresh the chip when the sky or the weather changes. */
+    updateWeatherHud() {
+        this.drawWeatherChip();
+    }
+
+    /**
+     * THE RAIN BUFF: every planted-but-unwatered plot becomes watered and
+     * starts growing. Mirrors waterAll() but with no ad, no modal and the
+     * gentler "mưa phùn" feedback (splash + soft blue sheen instead of drops).
+     */
+    rainIrrigate({ source = 'spring-rain' } = {}) {
+        if (this.watering) return 0;
+        const dry = this.tiles.flat().filter((t) => t.gridData.state === STATE.PLANTED && !t.gridData.watered);
+        if (!dry.length) return 0;
+        this.audio.ensure();
+        this.audio.splash(0.1);
+        dry.forEach((tile, i) => {
+            const data = tile.gridData;
+            data.watered = true;
+            data.rainWatered = true;
+            tile.setTint(0xbfe6ff);
+            this.bus.emit(EVENTS.TILE_WATERED, { row: data.row, col: data.col, source });
+            const flash = this.add.image(tile.x, tile.y, 'glow')
+                .setTint(0x9fd8ff).setAlpha(0.36).setScale(0.72, 0.44).setDepth(tile.depth + 4);
+            this.tweens.add({ targets: flash, alpha: 0, scale: 1.2, duration: 700 + i * 24, onComplete: () => flash.destroy() });
+            data.state = STATE.GROWING;
+        });
+        // Only the plots the rain just watered bloom here — a plot the player
+        // watered with the can keeps its own (earlier) schedule, so the two
+        // paths can never fight over the same tile.
+        this.time.delayedCall(1200, () => {
+            dry.forEach((tile, k) => {
+                if (tile.active && tile.gridData.state === STATE.GROWING) {
+                    this.time.delayedCall(k * this.bloomStaggerMs(), () => this.bloomTile(tile));
+                }
+            });
+        });
+        this.flashHint(`Mưa Phùn Linh Tuyền tưới ${dry.length} ô đất đang khô ✦`);
+        return dry.length;
+    }
+
+    /** Codex growth buff shortens the bloom stagger (1 = default pacing). */
+    bloomStaggerMs() {
+        const mult = this.codexBuffs?.growthMult ?? 1;
+        return Math.max(40, Math.round(90 * mult));
+    }
+
 
     /* ============ LINH ĐẢO PHÙ VÂN — floating celestial stone island ============ */
     createPlatform() {
@@ -181,7 +442,7 @@ export default class GardenScene extends Phaser.Scene {
         this.islandShadow = this.add.image(540, 1452, 'island_shadow')
             .setDisplaySize(700, 172)
             .setAlpha(0.45)
-            .setDepth(-70);
+            .setDepth(D.ISLAND_SHADOW);
         this.tweens.add({
             targets: this.islandShadow,
             alpha: { from: 0.41, to: 0.48 },
@@ -195,15 +456,17 @@ export default class GardenScene extends Phaser.Scene {
         // rocky 2.5D underside hangs over the water below.
         const texH = 660, texCy = 270;
         this.platform = this.add.image(540, 1110 + (texH / 2 - texCy) * 0.82, 'platform')
-            .setDepth(-60)
+            .setDepth(D.PLATFORM)
             .setScale(0.82);
-        // celestial aura around the island
-        this.add.image(540, 1180, 'glow').setTint(0x8f7ae0).setAlpha(0.12).setScale(5.4, 3.0).setDepth(-59);
+        // celestial aura around the island — the weather view lifts this at
+        // night ("đèn đá tự thắp sáng"), see onLampLevel()
+        this.islandAura = this.add.image(540, 1180, 'glow')
+            .setTint(0x8f7ae0).setAlpha(0.12).setScale(5.4, 3.0).setDepth(D.ISLAND_AURA);
         // island name, resting on the shadow like a reflection
         this.add.text(540, 1452, '· Linh Đảo Phù Vân ·', {
             fontFamily: DIALOG_FONT, fontSize: '24px', color: '#cfc0ff', fontStyle: 'italic',
             stroke: '#160f2e', strokeThickness: 5,
-        }).setOrigin(0.5).setDepth(-58).setAlpha(0.9);
+        }).setOrigin(0.5).setDepth(D.ISLAND_AURA + 1).setAlpha(0.9);
     }
 
     /* ====================== BRIDGE + NPC ====================== */
@@ -515,7 +778,16 @@ export default class GardenScene extends Phaser.Scene {
 
     onDialogChoice(index) {
         this.audio.click();
+        const choice = this.dialog.getCurrentNode()?.choices?.[index];
         const node = this.dialog.choose(index);
+        // A dialogue choice may request a system action. The request rides the
+        // bus, so the dialog never has to know the codex (or vice versa).
+        const action = node?.action || choice?.action;
+        if (action === 'open_codex') {
+            this.closeDialog();
+            this.bus.emit(EVENTS.CODEX_OPEN_REQUEST, { from: choice ? 'dialog' : 'node' });
+            return;
+        }
         if (node) {
             this.renderDialogNode(node);
         } else {
@@ -546,6 +818,20 @@ export default class GardenScene extends Phaser.Scene {
         }
     }
 
+    /** True when a full-screen overlay (drawer / dialog / codex / ad) is up. */
+    uiBlocked() {
+        return !!(this.drawerOpen || this.dialogVisible || this.adWatching || this.codexModal?.isOpen());
+    }
+
+    /** Open the Vạn Hoa Đồ Giám scroll (also callable from tests / NPC dialog). */
+    openCodex() {
+        this.codexModal?.open();
+    }
+
+    closeCodex() {
+        this.codexModal?.close();
+    }
+
     hoverTile(tile, on) {
         const data = tile.gridData;
         const canPlant = this.selectedSeed && data.state === STATE.EMPTY;
@@ -563,6 +849,7 @@ export default class GardenScene extends Phaser.Scene {
     }
 
     handleTileClick(tile) {
+        if (this.uiBlocked()) return;
         this.audio.ensure();
         const data = tile.gridData;
         // If blooming, harvest it
@@ -592,13 +879,36 @@ export default class GardenScene extends Phaser.Scene {
         this.audio.chime(1046.5, { gain: 0.08 });
         this.audio.pluck(880, { gain: 0.06 });
 
-        // Economy reward
-        const reward = this.economy.harvestFlower(seedId);
+        /* Reward = base economy × codex buffs (System 9) × sky buffs (System 8).
+           The three systems never import each other: the scene aggregates the
+           multipliers it was given by each and hands one object to the economy. */
+        const night = !!this.weather?.isNight();
+        const codexBonus = this.codex?.getHarvestBonus(seedId, { night }) ?? {};
+        const skyMod = this.weather?.getModifiers() ?? { harmonyMult: 1, reason: 'none' };
+        const reward = this.economy.harvestFlower(seedId, {
+            harmonyBonus: codexBonus.harmonyBonus ?? 0,
+            stoneBonus: codexBonus.stoneBonus ?? 0,
+            harmonyMult: (codexBonus.harmonyMult ?? 1) * (skyMod.harmonyMult ?? 1),
+        });
         const newQuests = this.economy.checkQuests();
+
+        // The publish is what lets System 9 record the harvest — the scene never
+        // calls codex.recordHarvest() directly.
+        this.bus.emit(EVENTS.FLOWER_HARVESTED, {
+            seedId,
+            row: data.row,
+            col: data.col,
+            harmony: reward.harmony,
+            spiritStones: reward.spiritStones,
+            rainWatered: !!data.rainWatered,
+            nightGlow: !!codexBonus.nightGlow,
+            sky: skyMod.reason,
+        });
+        this.bus.emit(EVENTS.CURRENCY_CHANGED, { source: 'harvest', harmony: this.economy.harmony, spiritStones: this.economy.spiritStones });
 
         // Visual: sparkle burst + reward popup
         const seed = SEED_BY_ID[seedId];
-        this.emitPetals(tile.x, tile.y - 26, seedId, 14);
+        this.emitPetals(tile.x, tile.y - 26, seedId, codexBonus.nightGlow ? 20 : 14);
         this.sparks.emitParticleAt(tile.x, tile.y - 26, 10);
 
         // Destroy bloom sprites
@@ -617,11 +927,17 @@ export default class GardenScene extends Phaser.Scene {
             });
         }
 
-        // Floating reward text
-        const rewardText = `+${reward.harmony} ✿  +${reward.spiritStones} 💎`;
+        // Floating reward text (buff sources named so the systems feel connected)
+        const credits = [];
+        if (reward.harmonyBonus) credits.push(`Đồ Giám +${reward.harmonyBonus}✿`);
+        if (reward.stoneBonus) credits.push(`Thành thạo +${reward.stoneBonus}💎`);
+        if (reward.harmonyMult > 1) {
+            credits.push(skyMod.reason === 'full-moon' ? `Trăng Tròn ×${reward.harmonyMult}✿` : `×${reward.harmonyMult}✿`);
+        }
+        const rewardText = `+${reward.harmony} ✿  +${reward.spiritStones} 💎${credits.length ? `\n${credits.join(' · ')}` : ''}`;
         const pop = this.add.text(tile.x, tile.y - 60, rewardText, {
-            fontFamily: 'Georgia, serif', fontSize: '28px', color: '#ffe9a8', fontStyle: 'bold',
-            stroke: '#3a1c5e', strokeThickness: 6,
+            fontFamily: DIALOG_FONT, fontSize: credits.length ? '24px' : '28px', color: '#ffe9a8', fontStyle: 'bold',
+            stroke: '#3a1c5e', strokeThickness: 6, align: 'center', lineSpacing: 2,
         }).setOrigin(0.5).setDepth(D.PETALS + 3);
         this.tweens.add({
             targets: pop, y: tile.y - 130, alpha: 0, duration: 1100, ease: 'Cubic.easeOut',
@@ -632,6 +948,7 @@ export default class GardenScene extends Phaser.Scene {
         data.state = STATE.EMPTY;
         data.seedId = null;
         data.watered = false;
+        data.rainWatered = false;
         data.plantSprites = null;
         data.bloomSprite = null;
         data.bloomGlow = null;
@@ -643,8 +960,11 @@ export default class GardenScene extends Phaser.Scene {
         this.spiritStones = this.economy.spiritStones;
         this.updateHud();
 
-        // Quest completion celebration
+        // Quest completion celebration (published so any system can react)
         if (newQuests.length > 0) {
+            for (const q of newQuests) {
+                this.bus.emit(EVENTS.QUEST_COMPLETED, { id: q.id, name: q.name, reward: q.reward });
+            }
             this.showQuestCompletion(newQuests);
         }
     }
@@ -672,7 +992,7 @@ export default class GardenScene extends Phaser.Scene {
                 const banner = this.add.text(W / 2, 250 + i * 70, `🏆 ${q.name} — +${q.reward} 💎`, {
                     fontFamily: 'Georgia, serif', fontSize: '34px', color: '#ffe9a8', fontStyle: 'bold',
                     stroke: '#7a4a1e', strokeThickness: 8,
-                }).setOrigin(0.5).setDepth(D.MODAL - 5).setScale(0.5).setAlpha(0);
+                }).setOrigin(0.5).setDepth(D.TOAST - 20).setScale(0.5).setAlpha(0);
                 this.tweens.add({
                     targets: banner, scale: 1, alpha: 1, duration: 400, ease: 'Back.easeOut',
                     onComplete: () => {
@@ -715,6 +1035,7 @@ export default class GardenScene extends Phaser.Scene {
         this.updateHint();
         const idx = this.tiles.flat().indexOf(tile);
         this.audio.chime(660 + (idx % 5) * 60, { gain: 0.05 });
+        this.bus.emit(EVENTS.TILE_PLANTED, { seedId: seed.id, row: data.row, col: data.col });
     }
 
     /* ============================ SEARCH DRAWER ============================ */
@@ -934,7 +1255,7 @@ export default class GardenScene extends Phaser.Scene {
         });
 
         // Harmony badge
-        const hud = this.add.container(860, 72).setDepth(10);
+        const hud = this.add.container(860, 72).setDepth(D.HUD);
         const badge = this.add.graphics();
         badge.fillStyle(0x241540, 0.92);
         badge.lineStyle(3, C.gold, 0.9);
@@ -950,7 +1271,7 @@ export default class GardenScene extends Phaser.Scene {
         hud.add([badge, lotus, this.harmonyText, this.harmonyValue]);
 
         // Spirit Stones badge
-        const stoneHud = this.add.container(860, 162).setDepth(10);
+        const stoneHud = this.add.container(860, 162).setDepth(D.HUD);
         const stoneBadge = this.add.graphics();
         stoneBadge.fillStyle(0x241540, 0.92);
         stoneBadge.lineStyle(3, 0xb26bff, 0.9);
@@ -967,11 +1288,11 @@ export default class GardenScene extends Phaser.Scene {
 
         // hint line
         this.hintBg = this.add.rectangle(W / 2, 218, 900, 52, 0x1a0f2e, 0.62)
-            .setStrokeStyle(2, C.gold, 0.5).setDepth(4);
+            .setStrokeStyle(2, C.gold, 0.5).setDepth(D.HINT);
         this.hintText = this.add.text(W / 2, 218, '', {
             fontFamily: 'Georgia, serif', fontSize: '26px', color: '#efe0ff',
             align: 'center', stroke: '#1b1140', strokeThickness: 6,
-        }).setOrigin(0.5).setDepth(5);
+        }).setOrigin(0.5).setDepth(D.HINT + 1);
     }
 
     updateHint() {
@@ -984,7 +1305,7 @@ export default class GardenScene extends Phaser.Scene {
             this.hintText.setColor('#d8c3f2');
             this.hintBg.setSize(1000, 52);
         } else {
-            this.hintText.setText('Mở Ngăn Hạt Giống ⬇ · Chạm NPC để nhận nhiệm vụ · Vuốt để thu hoạch');
+            this.hintText.setText('Ngăn Hạt Giống ⬇ · NPC nhận nhiệm vụ · Đồ Giám ↗ để xem hoa đã sưu tập');
             this.hintText.setColor('#efe0ff');
             this.hintBg.setSize(980, 52);
         }
@@ -1240,7 +1561,7 @@ export default class GardenScene extends Phaser.Scene {
         // Drag-to-Plant: when a seed is selected, dragging across empty tiles plants them
         // Swipe-to-Harvest: swiping across blooming tiles harvests them
         this.input.on('pointerdown', (pointer) => {
-            if (this.drawerOpen || this.dialogVisible || this.adWatching) return;
+            if (this.uiBlocked()) return;
             this.gestureActive = true;
             this.gestureStartX = pointer.x;
             this.gestureStartY = pointer.y;
@@ -1248,8 +1569,13 @@ export default class GardenScene extends Phaser.Scene {
         });
 
         this.input.on('pointermove', (pointer) => {
+            // the codex scroll drags its own body instead of planting seeds
+            if (this.codexModal?.isOpen()) {
+                this.codexModal.handleDragMove(pointer);
+                return;
+            }
             if (!this.gestureActive) return;
-            if (this.drawerOpen || this.dialogVisible) return;
+            if (this.uiBlocked()) return;
 
             // Convert pointer to game coords
             const worldX = pointer.x;
@@ -1279,11 +1605,12 @@ export default class GardenScene extends Phaser.Scene {
         this.input.on('pointerup', () => {
             this.gestureActive = false;
             this.lastDragTile = null;
+            this.codexModal?.handleDragEnd();
         });
     }
 
     /* ============================ WATER & BLOOM ============================ */
-    waterAll() {
+    waterAll(source = 'watering-can') {
         if (this.watering) return;
         this.watering = true;
         this.audio.ensure();
@@ -1296,24 +1623,28 @@ export default class GardenScene extends Phaser.Scene {
             const data = tile.gridData;
             if (data.state === STATE.BLOOMING) return;
             data.watered = true;
+            data.rainWatered = false;
             tile.setTint(0xaee8ff);
             this.waterDropOnTile(tile, i);
             data.state = STATE.GROWING;
             growIndex++;
+            this.bus.emit(EVENTS.TILE_WATERED, { row: data.row, col: data.col, source });
         });
 
+        // The codex growth buff (Xuân Phù) shortens the bloom cascade.
+        const stagger = this.bloomStaggerMs();
         this.time.delayedCall(650, () => {
             let k = 0;
             plantable.forEach((tile) => {
                 const data = tile.gridData;
                 if (data.state === STATE.GROWING) {
-                    this.time.delayedCall(k * 90, () => this.bloomTile(tile));
+                    this.time.delayedCall(k * stagger, () => this.bloomTile(tile));
                     k++;
                 }
             });
         });
 
-        this.time.delayedCall(700 + growIndex * 90, () => {
+        this.time.delayedCall(700 + growIndex * stagger, () => {
             this.watering = false;
         });
     }
@@ -1345,6 +1676,17 @@ export default class GardenScene extends Phaser.Scene {
         // Record bloom in economy
         this.economy.recordBloom(data.seedId);
         const newQuests = this.economy.checkQuests();
+
+        /* Published BEFORE the VFX so subscribers (the codex, then the modal)
+           can celebrate the discovery inside the same frame. */
+        this.bus.emit(EVENTS.FLOWER_BLOOMED, {
+            seedId: data.seedId,
+            row: data.row,
+            col: data.col,
+            discovered: this.codex?.isDiscovered(data.seedId) ?? false,
+            night: !!this.weather?.isNight(),
+            rainWatered: !!data.rainWatered,
+        });
 
         // ground highlight
         const groundGlow = this.add.image(tile.x, tile.y, 'glow')
@@ -1381,11 +1723,15 @@ export default class GardenScene extends Phaser.Scene {
         }
         if (mound) this.tweens.add({ targets: mound, alpha: 0, duration: 320, onComplete: () => mound.destroy() });
 
-        // per-bloom permanent glow
+        // per-bloom permanent glow — brighter at night (System 8 "hoa dạ quang
+        // phát sáng dịu mắt"), and brighter still for codex Thiên Hương blooms.
+        const nightBoost = this.lampLevel ?? 0;
+        const glowBase = 0.18 + nightBoost * 0.2 + (this.codexBuffs?.nightGlowSeeds?.includes(data.seedId) ? 0.12 : 0);
         const glow = this.add.image(tile.x, tile.y - 28, 'glow')
-            .setTint(seed.petals).setAlpha(0.18).setScale(1.5, 1.1).setDepth(tile.depth + 9);
+            .setTint(seed.petals).setAlpha(glowBase).setScale(1.5 + nightBoost * 0.3, 1.1 + nightBoost * 0.24)
+            .setDepth(tile.depth + 9);
         data.bloomGlow = glow;
-        this.tweens.add({ targets: glow, alpha: 0.3, duration: 1400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+        this.tweens.add({ targets: glow, alpha: glowBase + 0.12, duration: 1400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
 
         // audio
         this.audio.chime(SEED_CHIME_BASE[this.bloomCount % SEED_CHIME_BASE.length], { gain: 0.09 });
@@ -1403,9 +1749,13 @@ export default class GardenScene extends Phaser.Scene {
             onComplete: () => pop.destroy(),
         });
 
-        // Quest completion check
+        // Quest completion check — announced on the bus like every other reward
         if (newQuests.length > 0) {
+            for (const q of newQuests) {
+                this.bus.emit(EVENTS.QUEST_COMPLETED, { id: q.id, name: q.name, reward: q.reward });
+            }
             this.showQuestCompletion(newQuests);
+            this.bus.emit(EVENTS.CURRENCY_CHANGED, { source: 'quest', harmony: this.economy.harmony, spiritStones: this.economy.spiritStones });
         }
 
         // full mosaic celebration
@@ -1427,7 +1777,7 @@ export default class GardenScene extends Phaser.Scene {
         const banner = this.add.text(W / 2, 480, '✦ HOA VIÊN ĐẠI THÀNH ✦', {
             fontFamily: 'Georgia, serif', fontSize: '60px', color: '#ffe9a8', fontStyle: 'bold',
             stroke: '#7a4a1e', strokeThickness: 12,
-        }).setOrigin(0.5).setDepth(D.MODAL - 10).setScale(0.5).setAlpha(0);
+        }).setOrigin(0.5).setDepth(D.TOAST - 30).setScale(0.5).setAlpha(0);
         this.tweens.add({
             targets: banner, scale: 1, alpha: 1, duration: 600, ease: 'Back.easeOut',
             onComplete: () => {
@@ -1495,7 +1845,7 @@ export default class GardenScene extends Phaser.Scene {
             tint: 0xb26bff,
             frequency: 900,
             blendMode: Phaser.BlendModes.ADD,
-        }).setDepth(70);
+        }).setDepth(D.MIST);
         this.mistCyan = this.add.particles(0, 0, 'mist', {
             x: { min: -100, max: W + 100 },
             y: { min: 1730, max: 1880 },
@@ -1507,10 +1857,10 @@ export default class GardenScene extends Phaser.Scene {
             tint: 0x00e5ff,
             frequency: 1300,
             blendMode: Phaser.BlendModes.ADD,
-        }).setDepth(71);
+        }).setDepth(D.MIST + 1);
     }
 
     createBloomRadiance() {
-        this.add.image(W / 2, 1100, 'glow').setTint(0x3a2a72).setAlpha(0.25).setScale(5.4, 3.2).setDepth(-58);
+        this.add.image(W / 2, 1100, 'glow').setTint(0x3a2a72).setAlpha(0.25).setScale(5.4, 3.2).setDepth(D.ISLAND_AURA - 1);
     }
 }

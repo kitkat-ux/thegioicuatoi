@@ -138,14 +138,30 @@ export class EconomySystem {
 
     /**
      * Harvest a bloomed flower — yields Harmony + Spirit Stones.
+     *
+     * `modifiers` lets other systems (System 8 weather, System 9 codex)
+     * contribute to a harvest without knowing about each other. The scene
+     * aggregates them and passes one object through:
+     *   { harmonyBonus, stoneBonus, harmonyMult }
+     *
      * @param {string} seedId
-     * @returns {{ harmony: number, spiritStones: number }}
+     * @param {{harmonyBonus?:number, stoneBonus?:number, harmonyMult?:number}} [modifiers]
+     * @returns {{ harmony: number, spiritStones: number, harmonyBonus: number, stoneBonus: number }}
      */
-    harvestFlower(seedId) {
+    harvestFlower(seedId, modifiers = {}) {
         const rarity = SEED_RARITY[seedId] || 'common';
         const yieldConfig = this.config.harvestYield;
-        const stones = yieldConfig[rarity] ?? 1;
-        const harmony = this.config.harmonyPerHarvest;
+        const baseStones = yieldConfig[rarity] ?? 1;
+        const baseHarmony = this.config.harmonyPerHarvest;
+
+        const harmonyBonus = Math.max(0, modifiers.harmonyBonus | 0);
+        const stoneBonus = Math.max(0, modifiers.stoneBonus | 0);
+        const harmonyMult = Number.isFinite(modifiers.harmonyMult) && modifiers.harmonyMult > 0
+            ? modifiers.harmonyMult
+            : 1;
+
+        const harmony = Math.round((baseHarmony + harmonyBonus) * harmonyMult);
+        const stones = baseStones + stoneBonus;
 
         this.spiritStones += stones;
         this.harmony += harmony;
@@ -157,7 +173,7 @@ export class EconomySystem {
             this.stats.rareBlooms++;
         }
 
-        return { harmony, spiritStones: stones };
+        return { harmony, spiritStones: stones, harmonyBonus, stoneBonus, harmonyMult };
     }
 
     /** Record a bloom event (called when a flower reaches blooming state) */

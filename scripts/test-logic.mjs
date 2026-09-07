@@ -1,8 +1,17 @@
 // Pure-logic smoke tests (no browser needed): isometric math + search filter + economy + dialog.
+import fs from 'fs';
+import path from 'path';
 import { IsoMath } from '../src/core/IsoMath.js';
+import { LAYERS } from '../src/core/Layers.js';
 import { SEED_CATALOG, normalizeText, SEED_BY_ID } from '../src/data/seedCatalog.js';
+import { CODEX_LORE, MASTERY_TIERS, CODEX_MILESTONES, FULL_COLLECTION_POEM } from '../src/data/codexLore.js';
 import { EconomySystem, SEED_RARITY, QUESTS, ECONOMY_DEFAULTS } from '../src/systems/EconomySystem.js';
 import { DialogSystem, NPC_DIALOGUE, DIALOG_FONT } from '../src/systems/DialogSystem.js';
+import { EventManager, EVENTS } from '../src/systems/EventManager.js';
+import { CodexManager } from '../src/systems/CodexManager.js';
+import {
+    WeatherSystem, PHASE, CONDITION, AMBIENT, SEASONS, WEATHER_DEFAULTS,
+} from '../src/systems/WeatherSystem.js';
 
 let fails = 0;
 const check = (name, cond) => {
@@ -186,6 +195,308 @@ check('quest rows: completion by value (green_thumb at 10 blooms)', (() => {
     d2.updateQuestState({ totalBlooms: 10, completedQuests: new Set() });
     return d2.getQuestRows().find(q => q.id === 'green_thumb')?.done === true;
 })());
+
+
+
+/* ==========================================================================
+   PHASE 1 — EventManager (the single inter-system channel)
+   ========================================================================== */
+{
+    const bus = new EventManager({ label: 'test' });
+    let hits = [];
+    const off = bus.on('a:b', (p) => hits.push(['exact', p.v]));
+    bus.on('a:*', (p, ev) => hits.push(['wild:' + ev, p.v]));
+    bus.on('a:b', () => hits.push(['second', 0]), { owner: 'group' });
+    let onceCount = 0;
+    bus.once('a:once', () => onceCount++);
+
+    bus.emit('a:b', { v: 1 });
+    check('EventManager: exact + wildcard listeners both fire', hits.length === 3);
+    check('EventManager: wildcard receives the concrete event name', hits.some((h) => h[0] === 'wild:a:b'));
+    bus.emit('a:once', {});
+    bus.emit('a:once', {});
+    check('EventManager: once delivers exactly once', onceCount === 1);
+    hits = [];
+    off();
+    bus.emit('a:b', { v: 2 });
+    check('EventManager: unsubscribe handle removes only its listener', hits.length === 2 && !hits.some((h) => h[0] === 'exact'));
+    check('EventManager: offOwner drops a group of listeners', bus.offOwner('group') === 1 && bus.listenerCount('a:b') === 1);
+    check('EventManager: listenerCount is accurate', bus.listenerCount('a:b') === 1);
+
+    // an exception in one handler must not stop the others (or the frame)
+    let afterBad = 0;
+    bus.on('boom', () => { throw new Error('bad listener'); }, { owner: 'bad' });
+    bus.on('boom', () => { afterBad++; });
+    const origError = console.error;
+    console.error = () => {};
+    bus.emit('boom', {});
+    console.error = origError;
+    check('EventManager: handler exceptions are contained', afterBad === 1 && bus.errorCount === 1);
+    check('EventManager: history records emissions', bus.wasEmitted('boom') && bus.emitCount >= 4);
+    bus.setSuspended(true);
+    const before = bus.emitCount;
+    bus.emit('boom', {});
+    check('EventManager: suspend halts delivery', bus.emitCount === before);
+    bus.setSuspended(false);
+    bus.clear();
+    check('EventManager: clear drops all listeners', bus.listenerCount('boom') === 0);
+    check('EVENTS registry covers the phase-1 channels', [
+        EVENTS.FLOWER_BLOOMED, EVENTS.FLOWER_HARVESTED, EVENTS.TILE_WATERED, EVENTS.TILE_PLANTED,
+        EVENTS.WEATHER_PHASE_CHANGED, EVENTS.WEATHER_CHANGED, EVENTS.WEATHER_LAMP_LEVEL,
+        EVENTS.RAIN_STARTED, EVENTS.RAIN_ENDED, EVENTS.RAIN_IRRIGATE,
+        EVENTS.CODEX_SPECIES_DISCOVERED, EVENTS.CODEX_ENTRY_UPDATED, EVENTS.CODEX_MILESTONE,
+        EVENTS.CODEX_BUFFS_CHANGED, EVENTS.CODEX_OPEN_REQUEST, EVENTS.QUEST_COMPLETED,
+    ].every((n) => typeof n === 'string' && n.includes(':')));
+
+    // systems really talk through the bus (no direct calls): codex bound to bus
+    const bus2 = new EventManager();
+    const codex = new CodexManager().bind(bus2);
+    bus2.emit(EVENTS.FLOWER_BLOOMED, { seedId: 'flower_cyan_orchid' });
+    bus2.emit(EVENTS.FLOWER_HARVESTED, { seedId: 'flower_cyan_orchid' });
+    check('CodexManager learns species from the bus alone', codex.isDiscovered('flower_cyan_orchid') && codex.getEntry('flower_cyan_orchid').harvests === 1);
+}
+
+/* ==========================================================================
+   PHASE 1 — System 9: Vạn Hoa Đồ Giám (CodexManager)
+   ========================================================================== */
+{
+    const loreSeeds = Object.keys(CODEX_LORE);
+    check('Codex lore covers every catalog flower', SEED_CATALOG.every((s) => loreSeeds.includes(s.id)));
+    check('Codex lore: every species has biography + 4-line poem', loreSeeds.every((id) => {
+        const l = CODEX_LORE[id];
+        return l.biography?.length > 40 && Array.isArray(l.poem?.lines) && l.poem.lines.length === 4;
+    }));
+    check('Codex lore: every species has a mastery verse', loreSeeds.every((id) => CODEX_LORE[id].verse?.lines?.length === 2));
+    check('Codex lore: Vietnamese-only text (no stray CJK)', !/[\u4e00-\u9fff]/.test(JSON.stringify(CODEX_LORE) + JSON.stringify(FULL_COLLECTION_POEM)));
+    check('Codex lore: poem lines rhyme-free of markup', Object.values(CODEX_LORE).every((l) => l.poem.lines.every((line) => !/[<>{}[\]]/.test(line))));
+    check('Codex mastery tiers ascend 3 → 8 → 15 harvests',
+        MASTERY_TIERS.map((t) => t.atHarvests).join() === '3,8,15');
+    check('Codex milestones cover 1..5 species', CODEX_MILESTONES.map((m) => m.at).join() === '1,2,3,4,5');
+    check('Codex milestones grant the two tool skins',
+        CODEX_MILESTONES.some((m) => m.effect?.skin === 'sickle_jade') &&
+        CODEX_MILESTONES.some((m) => m.effect?.skin === 'bucket_gold'));
+
+    const codex = new CodexManager();
+    check('Codex starts empty', codex.getDiscoveredCount() === 0 && codex.getTitle() === null);
+    check('Codex has one page per catalog species', codex.size() === 5 && codex.getPages().length === 5);
+
+    // first bloom = discovery + poem
+    codex.recordBloom('flower_cyan_orchid');
+    let page = codex.getPages().find((p) => p.seedId === 'flower_cyan_orchid');
+    check('Codex: first bloom discovers the species', page.discovered === true && codex.getDiscoveredCount() === 1);
+    check('Codex: discovery unlocks the poem', page.poem !== null && page.poem.lines.length === 4);
+    check('Codex: verse stays locked until mastery tier 2', page.verse === null);
+    check('Codex: bloom + harvest counters', codex.totalBlooms === 1);
+    check('Codex: first milestone grants the +3 harmony reward', codex.unlockedMilestones.has('first_page'));
+
+    // harvests drive mastery tiers
+    for (let i = 0; i < 3; i++) codex.recordHarvest('flower_cyan_orchid');
+    page = codex.getPages().find((p) => p.seedId === 'flower_cyan_orchid');
+    check('Codex: 3 harvests unlock tier 1 (Mộc Dịch)', page.tiersUnlocked.includes('moc_dich'));
+    check('Codex: tier 1 adds +1 harmony for that species only',
+        codex.getHarvestBonus('flower_cyan_orchid').harmonyBonus === 1 &&
+        codex.getHarvestBonus('flower_purple_wisteria').harmonyBonus === 0);
+    for (let i = 0; i < 5; i++) codex.recordHarvest('flower_cyan_orchid'); // total 8
+    page = codex.getPages().find((p) => p.seedId === 'flower_cyan_orchid');
+    check('Codex: 8 harvests unlock tier 2 (Linh Căn) + the verse', page.tiersUnlocked.includes('linh_can') && page.verse !== null);
+    check('Codex: tier 2 adds +1 spirit stone', codex.getHarvestBonus('flower_cyan_orchid').stoneBonus === 1);
+
+    // discovery milestones + aggregated buffs
+    for (const id of ['flower_purple_wisteria', 'flower_golden_amber', 'flower_emerald_bamboo']) codex.recordBloom(id);
+    check('Codex: 4 species → title Ngự Hoa Tiên Sử', codex.getTitle() === 'Ngự Hoa Tiên Sử');
+    check('Codex: 4 species grants the jade sickle skin', codex.hasSkin('sickle_jade'));
+    const buffs4 = codex.getBuffs();
+    check('Codex: harmony multiplier aggregates from milestones', Math.abs(buffs4.harmonyMult - 1.27) < 1e-9);
+    check('Codex: growth multiplier only improves (<=1)', buffs4.growthMult === 0.85);
+    check('Codex: flat stone bonus from Bách Thảo Tri Âm', buffs4.stoneFlat === 1);
+    for (let i = 0; i < 15; i++) codex.recordHarvest('flower_cyan_orchid');
+    check('Codex: 15 harvests unlock tier 3 (Thiên Hương) night glow',
+        codex.getBuffs().nightGlowSeeds.includes('flower_cyan_orchid'));
+    check('Codex: tier 3 harmony bonus stacks on tier 1', codex.getHarvestBonus('flower_cyan_orchid').harmonyBonus === 3);
+
+    codex.recordBloom('flower_rare_nguyet_cuc');
+    const finalBuffs = codex.getBuffs();
+    check('Codex: full collection unlocks gold bucket skin', codex.hasSkin('bucket_gold') && codex.fullPoemUnlocked);
+    check('Codex: full collection title is Vạn Hoa Chủ Biên', codex.getTitle() === 'Vạn Hoa Chủ Biên');
+    check('Codex: growth buff capped at 0.7 (30% faster)', finalBuffs.growthMult === 0.7);
+    check('Codex: progress reports 5/5 complete', codex.getProgress().discovered === 5 && codex.getProgress().complete === true);
+    check('Codex: active buff list is human-readable', codex.getActiveBuffs().length >= 4 &&
+        codex.getActiveBuffs().every((b) => b.label && b.detail && b.source));
+
+    // persistence round-trip
+    const saved = codex.serialize();
+    const revived = new CodexManager().deserialize(saved);
+    check('Codex: serialize/deserialize preserves discovery + tiers',
+        revived.getDiscoveredCount() === 5 &&
+        revived.getEntry('flower_cyan_orchid').tiersUnlocked.join() === codex.getEntry('flower_cyan_orchid').tiersUnlocked.join());
+    check('Codex: serialize/deserialize preserves titles + skins',
+        revived.getTitle() === 'Vạn Hoa Chủ Biên' && revived.hasSkin('bucket_gold') && revived.fullPoemUnlocked);
+    check('Codex: unknown seeds are ignored safely', codex.recordBloom('not_a_flower') === null && codex.recordHarvest('not_a_flower') === null);
+}
+
+/* ==========================================================================
+   PHASE 1 — System 8: Thiên Thời Tứ Thời (WeatherSystem)
+   ========================================================================== */
+{
+    const total = Object.values(WEATHER_DEFAULTS.phaseMs).reduce((a, b) => a + b, 0);
+    check('Weather: day/dusk/night cycle sums to one day', total === 45000 + 22000 + 38000);
+    check('Weather: each phase has a distinct ambient tint', new Set([AMBIENT.day.tint, AMBIENT.dusk.tint, AMBIENT.night.tint]).size === 3);
+    check('Weather: night is the darkest wash', AMBIENT.night.alpha > AMBIENT.dusk.alpha && AMBIENT.dusk.alpha > AMBIENT.day.alpha);
+    check('Weather: only spring rolls rain by default', SEASONS.filter((s) => s.rainChance > 0).map((s) => s.key).join() === 'xuan');
+
+    const w = new WeatherSystem();
+    check('Weather: starts in the day phase, clear skies', w.getPhase() === PHASE.DAY && w.getCondition() === CONDITION.CLEAR);
+    const order = [];
+    for (let i = 0; i < Math.ceil(total / 250); i++) {
+        const r = w.tick(250);
+        if (r.phaseChanged) order.push(w.getPhase());
+    }
+    check('Weather: cycle order is day → dusk → night → day', order.slice(0, 2).join() === [PHASE.DUSK, PHASE.NIGHT].join());
+    check('Weather: one day advances the day counter', w.dayCount === 2);
+    check('Weather: tick() clamps huge deltas (no catch-up storms)', (() => {
+        const w2 = new WeatherSystem();
+        w2.tick(9_999_999); // e.g. a backgrounded tab resuming
+        // only 250ms is simulated, so the day phase cannot skip ahead
+        return w2.getPhase() === PHASE.DAY && w2.phaseElapsed === 250;
+    })());
+
+    // spring rain + the watering buff
+    const bus = new EventManager();
+    const w3 = new WeatherSystem().bind(bus);
+    const seen = [];
+    bus.on('weather:*', (p, ev) => seen.push(ev));
+    bus.on(EVENTS.RAIN_IRRIGATE, (p) => seen.push('irrigate:' + p.source));
+    const started = w3.forceRain(true);
+    check('Weather: rain can be forced on', started && w3.isRaining() && w3.getCondition() === CONDITION.SPRING_RAIN);
+    check('Weather: rain publishes rain-started on the bus', seen.includes(EVENTS.RAIN_STARTED));
+    check('Weather: rain publishes the irrigation buff fact', seen.includes('irrigate:spring-rain'));
+    check('Weather: rain means unwatered soil is auto-watered', w3.isAutoWaterActive() && w3.getModifiers().autoWater === true);
+    check('Weather: rain tints the scene cooler + darker', (() => {
+        const a = w3.getAmbient();
+        return a.condition === CONDITION.SPRING_RAIN && a.alpha > AMBIENT[a.phase].alpha;
+    })());
+    w3.forceRain(false);
+    check('Weather: clearing the sky ends the buff', !w3.isRaining() && !w3.isAutoWaterActive() && seen.includes(EVENTS.RAIN_ENDED));
+
+    // full moon
+    const w4 = new WeatherSystem();
+    w4.dayCount = WEATHER_DEFAULTS.moonCycle;
+    w4.forcePhase(PHASE.NIGHT);
+    check('Weather: every Nth night is a full moon', w4.isFullMoonNight() === true);
+    check('Weather: full moon doubles Harmony Points', w4.getModifiers().harmonyMult === WEATHER_DEFAULTS.fullMoonHarmonyMult);
+    check('Weather: full-moon ambient shows a round moon', w4.getAmbient().moonPhase === 'full' && w4.getAmbient().moon === 1);
+    const w5 = new WeatherSystem();
+    w5.dayCount = 2;
+    w5.forcePhase(PHASE.NIGHT);
+    check('Weather: ordinary nights do not double harmony', w5.getModifiers().harmonyMult === 1 && w5.getAmbient().moonPhase === 'crescent');
+
+    // deterministic rain rolls
+    const rollA = new WeatherSystem({ seed: 7, phaseOrder: [PHASE.DAY] , phaseMs: { [PHASE.DAY]: 10 } });
+    const rollB = new WeatherSystem({ seed: 7, phaseOrder: [PHASE.DAY], phaseMs: { [PHASE.DAY]: 10 } });
+    let rainA = 0, rainB = 0;
+    for (let i = 0; i < 40; i++) { rollA.tick(20); if (rollA.isRaining()) rainA++; rollB.tick(20); if (rollB.isRaining()) rainB++; }
+    check('Weather: seeded RNG makes the cycle reproducible', rainA === rainB && rainA > 0);
+
+    // season pacing + persistence
+    const w6 = new WeatherSystem();
+    for (let i = 0; i < Math.ceil((total * 3) / 250); i++) w6.tick(250);
+    check('Weather: seasons advance after seasonCycleLength days', w6.season.key !== 'xuan');
+    const snap = w6.serialize();
+    const w7 = new WeatherSystem().deserialize(snap);
+    check('Weather: serialize/deserialize restores phase + condition', w7.getPhase() === w6.getPhase() && w7.dayCount === w6.dayCount);
+    check('Weather: summary names the season + condition for the HUD', /Tiết/.test(w7.getSummary()) && w7.getSummary().length > 8);
+    check('Weather: soil moisture is drier by day, soaked by rain', (() => {
+        const w8 = new WeatherSystem();
+        const dry = w8.soilMoisture();
+        w8.forcePhase(PHASE.NIGHT);
+        const night = w8.soilMoisture();
+        w8.forceRain(true);
+        return dry < night && night < w8.soilMoisture() && w8.soilMoisture() === 1;
+    })());
+
+    // economy integration: modifiers actually change a harvest
+    const eco = new EconomySystem();
+    eco.init();
+    const plain = eco.harvestFlower('flower_cyan_orchid');
+    const buffed = eco.harvestFlower('flower_cyan_orchid', { harmonyBonus: 1, stoneBonus: 2, harmonyMult: 2 });
+    check('Economy: base harvest math unchanged', plain.harmony === 2 && plain.spiritStones === 1);
+    check('Economy: codex + weather modifiers apply on top', buffed.harmony === 6 && buffed.spiritStones === 3);
+}
+
+/* ==========================================================================
+   DESKTOP CENTERING FIX + maintained visual anchors (source-level guards)
+   ========================================================================== */
+{
+    const root = path.resolve(new URL('.', import.meta.url).pathname, '..');
+    const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+    const main = fs.readFileSync(path.join(root, 'src/main.js'), 'utf8');
+    const scene = fs.readFileSync(path.join(root, 'src/scenes/GardenScene.js'), 'utf8');
+    const css = html.replace(/\s+/g, ' ');
+
+    check('CSS: html/body are a full-viewport flex centering box',
+        /html,\s*body\s*{[^}]*display:\s*flex[^}]*justify-content:\s*center[^}]*align-items:\s*center/.test(css));
+    check('CSS: html/body sized to the viewport (100vw/100vh)', /width:\s*100vw/.test(css) && /height:\s*100vh/.test(css));
+    check('CSS: letterbox background is #0b0c16', /background-color:\s*#0b0c16/.test(css));
+    check('CSS: page overflow hidden (no scrollbar nudge off-center)', /overflow:\s*hidden/.test(css));
+    check('CSS: #game-container + canvas use margin: auto !important',
+        /#game-container,\s*canvas\s*{\s*margin:\s*auto\s*!important/.test(css));
+    check('CSS: wrapper/canvas display overrides are marked !important',
+        /display:\s*block\s*!important/.test(css) && /display:\s*flex\s*!important/.test(css));
+    check('CSS: wrapper stays flex so vertical centering survives margin:auto',
+        /#game-container\s*{[^}]*display:\s*flex\s*!important/.test(css));
+    check('CSS: DOM container re-centers with inset:0 + margin:auto',
+        /\.phaser-container\s*{[^}]*position:\s*absolute\s*!important/.test(css.replace(/\s+/g, ' ')) &&
+        /\.phaser-container\s*{[^}]*margin:\s*auto\s*!important/.test(css.replace(/\s+/g, ' ')));
+    check('CSS: html/body margin+padding reset to 0', /html,\s*body\s*{[^}]*margin:\s*0\s*;\s*padding:\s*0/.test(css));
+
+    check('Config: Scale.FIT enforced', /mode:\s*Phaser\.Scale\.FIT/.test(main));
+    check('Config: CENTER_BOTH autoCenter enforced', /autoCenter:\s*Phaser\.Scale\.CENTER_BOTH/.test(main));
+    check('Config: 9:16 design size declared in the scale block', /width:\s*W/.test(main) && /height:\s*H/.test(main) && /const W = 1080/.test(main) && /const H = 1920/.test(main));
+    check('Config: canvas letterbox color matches the page background', /'#0b0c16'/.test(main));
+    check('Config: parent is the centering wrapper', /parent:\s*'game-container'/.test(main));
+    check('Config: scale is re-asserted after resizes (flex layout settles late)',
+        /scale\.refresh\(\)/.test(main) && /scale\.updateCenter\(\)/.test(main));
+
+    // visual anchors that must NOT move
+    check('Anchor: Tiên Nữ Hoa Giang still at (890, 1345)', /NPC_POS = \{ x: 890, y: 1345 \}/.test(scene));
+    check('Anchor: 6x6 grid preserved', /const ROWS = 6;/.test(scene) && /const COLS = 6;/.test(scene));
+    check('Anchor: three bottom action buttons preserved', /createActionBar\(\)/.test(scene) && /x: 160,/.test(scene) && /x: 540,/.test(scene) && /x: 920,/.test(scene));
+    check('Anchor: 2.5D stone terrace (platform) still keyed to the grid centre', /'platform'\)/.test(scene) && /1110/.test(scene));
+
+    // layer plan: world below the ambient wash, UI above it
+    check('Layers: ambient wash sits above the world (tiles, petals, rain)',
+        LAYERS.AMBIENT > LAYERS.TILES && LAYERS.AMBIENT > LAYERS.PETALS && LAYERS.AMBIENT > LAYERS.RAIN);
+    check('Layers: every UI layer stays lit above the wash',
+        [LAYERS.HUD, LAYERS.BAR, LAYERS.CHIP, LAYERS.HINT, LAYERS.DRAWER, LAYERS.DIALOG, LAYERS.MODAL, LAYERS.CODEX]
+            .every((d) => d > LAYERS.AMBIENT));
+    check('Layers: codex scroll is the topmost reading surface', LAYERS.CODEX > LAYERS.DIALOG && LAYERS.CODEX > LAYERS.MODAL);
+}
+
+/* ==========================================================================
+   Phase-1 module contracts (files exist and are used by the scene)
+   ========================================================================== */
+{
+    const root = path.resolve(new URL('.', import.meta.url).pathname, '..');
+    const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+    const scene = read('src/scenes/GardenScene.js');
+    for (const rel of ['src/systems/EventManager.js', 'src/systems/CodexManager.js', 'src/systems/WeatherSystem.js', 'src/ui/CodexModal.js', 'src/vfx/WeatherView.js', 'src/core/Layers.js', 'src/data/codexLore.js']) {
+        check(`Phase 1 module present: ${rel}`, fs.existsSync(path.join(root, rel)) && read(rel).length > 500);
+    }
+    check('Scene publishes through the bus (no codex/weather cross-imports)',
+        /new EventManager\(/.test(scene) && /this\.bus\.emit\(EVENTS\.FLOWER_BLOOMED/.test(scene) && /this\.bus\.emit\(EVENTS\.FLOWER_HARVESTED/.test(scene));
+    check('Scene subscribes to the rain irrigation buff', /b\.on\(EVENTS\.RAIN_IRRIGATE/.test(scene) && /rainIrrigate\(/.test(scene));
+    check('Scene ticks the weather clock every frame', /update\(time, delta\)/.test(scene) && /this\.weather\.tick\(delta\)/.test(scene));
+    check('Codex buffs feed the economy (harvest modifiers)', /getHarvestBonus\(/.test(scene) && /harmonyMult:/.test(scene));
+    check('HUD carries the codex scroll button + weather chip', /createWeatherChip\(\)/.test(scene) && /new CodexModal\(/.test(scene));
+    check('Weather view owns ambient tint + rain particles',
+        /setBlendMode\(Phaser\.BlendModes\.MULTIPLY\)/.test(read('src/vfx/WeatherView.js')) &&
+        /'rain_streak'/.test(read('src/vfx/WeatherView.js')) &&
+        /'ripple'/.test(read('src/vfx/WeatherView.js')));
+    check('No system imports another system (bus-only coupling)',
+        !/from '\.\/CodexManager\.js'/.test(read('src/systems/WeatherSystem.js')) &&
+        !/from '\.\/WeatherSystem\.js'/.test(read('src/systems/CodexManager.js')) &&
+        !/from '\.\/CodexModal\.js'/.test(read('src/systems/CodexManager.js')));
+}
 
 console.log(fails === 0 ? '\nALL TESTS PASSED' : `\n${fails} TEST(S) FAILED`);
 process.exit(fails === 0 ? 0 : 1);

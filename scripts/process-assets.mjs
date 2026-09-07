@@ -258,6 +258,8 @@ await makeGreenKeySprite('flower_rare_greenscreen.png', 'flower_rare.png', { siz
 await makeGreenKeySprite('icon_sickle_greenscreen.png', 'icon_sickle.png', { size: 192 });
 // Re-keyed from the previous studio-black versions (raw copies of the old files):
 await makeBlackKeySprite('icon_spirit_stone.png', 'icon_spirit_stone.png', { size: 128 });
+// System 9 — ornate codex scroll button for the top HUD (07 catalog §2C.4).
+await makeBlackKeySprite('icon_codex_scroll_black.png', 'icon_codex_scroll.png', { size: 192, keyLo: 40, keyHi: 150 });
 // bridge_pavilion REMOVED — bg_manor_isometric already contains complete scenery.
 // Never layer duplicate bridge/pavilion patches at (150-350,700-900).
 
@@ -271,12 +273,15 @@ const SCREEN_KEYED = ['npc_tien_nu.png', 'npc_tien_nu_portrait.png', 'flower_rar
 console.log('\n--- asset integrity check ---');
 let bad = 0;
 const screenColors = {};
+const FALLBACK_SCREEN = { r: 14, g: 186, b: 27 }; // the green studio screen used for these keys
 for (const f of SCREEN_KEYED) {
     const candidate = path.join(RAW, f.replace(/(\.png)$/, '_greenscreen$1'));
     const src = fs.existsSync(candidate)
         ? candidate
         : path.join(RAW, 'npc_fairy_greenscreen.png'); // npc + portrait share one source
-    screenColors[f] = await measureScreenColor(src);
+    // The verification pass must stay runnable with a partial (or absent)
+    // raw_assets/ set — fall back to the documented screen color.
+    screenColors[f] = fs.existsSync(src) ? await measureScreenColor(src) : FALLBACK_SCREEN;
 }
 
 for (const f of fs.readdirSync(OUT).sort()) {

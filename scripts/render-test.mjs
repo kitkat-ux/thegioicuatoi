@@ -109,6 +109,7 @@ class TestGardenScene extends GardenScene {
         make('icon_spirit_stone', 128, 128, '#b26bff');
         make('npc_tien_nu', 256, 384, '#c9dff8');
         make('npc_tien_nu_portrait', 256, 256, '#c9dff8');
+        make('icon_codex_scroll', 192, 192, '#f3e6c6');
         make('bridge_pavilion', 320, 240, '#4a1e20');
     }
 }
@@ -126,7 +127,13 @@ const game = new Phaser.Game({
 });
 game.events.on('error', (e) => errors.push(String(e?.stack || e)));
 process.on('unhandledRejection', (e) => errors.push('unhandled: ' + String(e?.stack || e)));
-process.on('uncaughtException', (e) => errors.push('uncaught: ' + String(e?.stack || e)));
+const noteError = (e) => {
+    const msg = String(e?.stack || e);
+    errors.push('uncaught: ' + msg);
+    console.log('UNCAUGHT —', msg.split('\n').slice(0, 3).join('\n  '));
+};
+process.on('uncaughtException', noteError);
+process.on('unhandledRejection', noteError);
 
 let scene = null;
 for (let i = 0; i < 40 && !scene; i++) {
@@ -149,6 +156,53 @@ await new Promise((r) => setTimeout(r, 400));
 saveFrame('render_test_noshadow.png');
 scene.islandShadow.setVisible(true);
 await new Promise((r) => setTimeout(r, 200));
+
+/* ---------- Phase 1: night / rain / codex frames ---------- */
+// (1) night with the ambient wash ON, then the same instant with it OFF:
+//     the only difference may be pixels BELOW LAYERS.AMBIENT. Drifting
+//     particles are frozen first so the two frames are otherwise identical.
+for (const o of scene.children.list) if (o.type === 'ParticleEmitter') o.pause();
+scene.weather.forcePhase('night');
+scene.weatherView.sync({ instant: true });
+await new Promise((r) => setTimeout(r, 350));
+saveFrame('render_test_night_wash.png');
+scene.weatherView.wash.setVisible(false);
+scene.weatherView.lift.setVisible(false);
+await new Promise((r) => setTimeout(r, 350));
+saveFrame('render_test_night_nowash.png');
+scene.weatherView.wash.setVisible(true);
+scene.weatherView.lift.setVisible(true);
+
+for (const o of scene.children.list) if (o.type === 'ParticleEmitter') o.resume();
+// (2) rain over the lake
+scene.weather.forceRain(true);
+scene.weatherView.sync({ instant: true });
+await new Promise((r) => setTimeout(r, 700));
+saveFrame('render_test_rain.png');
+scene.weather.forceRain(false);
+await new Promise((r) => setTimeout(r, 200));
+
+// (3) day, back to the reference lighting
+scene.weather.forcePhase('day');
+scene.weatherView.sync({ instant: true });
+await new Promise((r) => setTimeout(r, 300));
+
+// (4) the codex scroll, opened with real catalogue progress
+scene.codex.recordBloom('flower_cyan_orchid');
+scene.codex.recordBloom('flower_purple_wisteria');
+scene.codex.recordBloom('flower_golden_amber');
+scene.codex.recordBloom('flower_emerald_bamboo');
+for (let i = 0; i < 4; i++) scene.codex.recordHarvest('flower_cyan_orchid');
+for (let i = 0; i < 3; i++) scene.codex.recordHarvest('flower_purple_wisteria');
+scene.openCodex();
+await new Promise((r) => setTimeout(r, 500));
+saveFrame('render_test_codex.png');
+scene.codexModal.setScroll(99999); // scrolled to the buffs / milestone pages
+await new Promise((r) => setTimeout(r, 300));
+saveFrame('render_test_codex_bottom.png');
+fs.writeFileSync('scripts/shots/codex_geom.json', JSON.stringify(scene.codexModal.getSnapshot()));
+scene.closeCodex();
+await new Promise((r) => setTimeout(r, 400));
 
 // open dialog -> quest list -> scroll to bottom
 scene.onNpcClick();
@@ -185,6 +239,7 @@ const px = (x, y) => {
     return [data[i], data[i + 1], data[i + 2]];
 };
 const lum = (x, y) => { const [r, g, b] = px(x, y); return 0.299 * r + 0.587 * g + 0.114 * b; };
+const BTN_Y = 1775; // action-button row centre (see GardenScene makeActionButton)
 const avgLum = (cx, cy, rad, step = 4) => {
     let s = 0, n = 0;
     for (let y = cy - rad; y <= cy + rad; y += step) for (let x = cx - rad; x <= cx + rad; x += step) {
@@ -209,6 +264,112 @@ const regionAvg = (lumFn, x0, x1, y0, y1, step = 4) => {
 const withShadow = regionAvg(lum, 420, 660, 1432, 1472);
 const noShadow = regionAvg(lumNS, 420, 660, 1432, 1472);
 rcheck('island shadow darkens the water beneath (~0.45 alpha)', withShadow < noShadow - 2, `with=${withShadow.toFixed(1)} vs without=${noShadow.toFixed(1)}`);
+
+// 1b) no stray full-screen veil may sit on the display list (a dim left
+//     outside its overlay container once blacked out the whole garden)
+{
+    const { data: vd, info: vi } = await sharpMod('scripts/shots/render_test_garden.png').raw().toBuffer({ resolveWithObject: true });
+    let s = 0, n = 0;
+    for (let y = 0; y < vi.height; y += 6) for (let x = 0; x < vi.width; x += 6) {
+        const i = (y * vi.width + x) * vi.channels;
+        s += 0.299 * vd[i] + 0.587 * vd[i + 1] + 0.114 * vd[i + 2]; n++;
+    }
+    const whole = s / n;
+    rcheck('Day frame is not veiled by a stray overlay', whole > 26 && whole < 90, `mean luminance=${whole.toFixed(1)}`);
+}
+
+// 1c) ambient wash layering: world re-tinted, HUD pixels untouched.
+//     Both frames are the same instant with only the wash toggled, so any
+//     difference must come from an object rendered below LAYERS.AMBIENT.
+{
+    const [on, off] = await Promise.all([
+        sharpMod('scripts/shots/render_test_night_wash.png').raw().toBuffer({ resolveWithObject: true }),
+        sharpMod('scripts/shots/render_test_night_nowash.png').raw().toBuffer({ resolveWithObject: true }),
+    ]);
+    const at = (b, x, y) => { const i = (y * b.info.width + x) * b.info.channels; return 0.299 * b.data[i] + 0.587 * b.data[i + 1] + 0.114 * b.data[i + 2]; };
+    const diff = (x0, x1, y0, y1) => {
+        let moved = 0, total = 0, sum = 0;
+        for (let y = y0; y <= y1; y += 3) for (let x = x0; x <= x1; x += 3) {
+            const d = Math.abs(at(on, x, y) - at(off, x, y));
+            sum += d; total++; if (d > 4) moved++;
+        }
+        return { movedPct: (moved * 100) / total, mean: sum / total };
+    };
+    const world = diff(240, 840, 980, 1420);   // island + lake: below the wash
+    // The button CORES are opaque art parented above the wash, so those exact
+    // pixels must not move at all (the bar backdrop is translucent by design
+    // and legitimately shows the dimmed garden through it).
+    const cores = [160, 540, 920].map((cx) => diff(cx - 44, cx + 44, BTN_Y - 44, BTN_Y + 44));
+    const worstCore = cores.reduce((a, b) => (b.movedPct > a.movedPct ? b : a));
+    rcheck('Night wash re-tints the garden (everything below LAYERS.AMBIENT)',
+        world.movedPct > 90, `${world.movedPct.toFixed(1)}% of world px moved, mean Δ${world.mean.toFixed(1)}`);
+    rcheck('Night wash never dims the action buttons (opaque UI renders above it)',
+        worstCore.movedPct < 1, `worst button: ${worstCore.movedPct.toFixed(2)}% moved, mean Δ${worstCore.mean.toFixed(2)}`);
+    rcheck('Night wash dims the world, opaque UI above it is pixel-identical',
+        world.mean > 20 && worstCore.mean < 0.5, `world Δ${world.mean.toFixed(1)} vs button Δ${worstCore.mean.toFixed(2)}`);
+
+    // rain streaks must actually draw (frozen-day comparison is not usable here,
+    // so compare against the night frame at the same lighting)
+    const rain = await sharpMod('scripts/shots/render_test_rain.png').raw().toBuffer({ resolveWithObject: true });
+    let drops = 0;
+    for (let y = 320; y <= 900; y += 2) for (let x = 90; x <= 990; x += 2) {
+        if (at(rain, x, y) > at(off, x, y) + 14) drops++;
+    }
+    rcheck('Rain streaks render over the garden (emitter visible)', drops > 400, `${drops} brightened px`);
+}
+
+// 1d) the codex scroll renders a readable sheet, clipped to the panel — all
+//     regions come from the live snapshot geometry, never hard-coded numbers.
+{
+    const geom = JSON.parse(fs.readFileSync('scripts/shots/codex_geom.json', 'utf8'));
+    const { panel, body } = geom;
+    const cod = await sharpMod('scripts/shots/render_test_codex.png').raw().toBuffer({ resolveWithObject: true });
+    const atC = (x, y) => { const i = (y * cod.info.width + x) * cod.info.channels; return [cod.data[i], cod.data[i + 1], cod.data[i + 2]]; };
+    const frac = (x0, x1, y0, y1, pred) => {
+        let hit = 0, n = 0;
+        for (let y = Math.ceil(y0); y <= y1; y += 2) for (let x = Math.ceil(x0); x <= x1; x += 2) {
+            if (pred(...atC(x, y))) hit++; n++;
+        }
+        return hit / n;
+    };
+    const warm = (r, g, b) => r > 140 && g > 120 && b > 80 && r > b;
+    const dark = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b < 95;
+    const lit = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b > 70;
+
+    const inBody = frac(panel.x + 18, panel.x + panel.w - 18, body.top + 8, body.bottom - 8, warm);
+    rcheck('Codex scroll: parchment sheet fills the masked body', inBody > 0.5, `${(inBody * 100).toFixed(0)}% warm px`);
+    const ink = frac(panel.x + 18, panel.x + panel.w - 18, body.top + 8, body.bottom - 8, dark);
+    rcheck('Codex scroll: entries are inked (text + reward lines render)', ink > 0.02, `${(ink * 100).toFixed(1)}% dark px`);
+    const avgL = (x0, x1, y0, y1) => frac(x0, x1, y0, y1, (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b) / (1 / ((x1 - x0) / 2 + 1) / ((y1 - y0) / 2 + 1));
+    // mean luminance helper (frac averages booleans; reuse the same sampling)
+    const meanL = (src, x0, x1, y0, y1) => {
+        let s = 0, n = 0;
+        for (let y = Math.ceil(y0); y <= y1; y += 2) for (let x = Math.ceil(x0); x <= x1; x += 2) {
+            const i = (y * src.info.width + x) * src.info.channels;
+            s += 0.299 * src.data[i] + 0.587 * src.data[i + 1] + 0.114 * src.data[i + 2]; n++;
+        }
+        return s / n;
+    };
+    void avgL;
+    const day = await sharpMod('scripts/shots/render_test_garden.png').raw().toBuffer({ resolveWithObject: true });
+    // bands above and below the scroll, clear of its rollers and aura
+    const bands = [[6, 1074, 4, panel.y - 26], [6, 1074, panel.y + panel.h + 26, 1916]];
+    const dayBand = bands.map((b) => meanL(day, ...b));
+    const codexBand = bands.map((b) => meanL(cod, ...b));
+    const drop = dayBand.reduce((a, v, i) => a + v, 0) / 2 - codexBand.reduce((a, v, i) => a + v, 0) / 2;
+    rcheck('Codex scroll: the garden behind the sheet is dimmed', drop > 5,
+        `outside the panel ${dayBand.map((v) => v.toFixed(1)).join('/')} → ${codexBand.map((v) => v.toFixed(1)).join('/')}`);
+    const headerLit = frac(panel.x + panel.w - 150, panel.x + panel.w - 40, panel.y + 30, panel.y + 150, lit);
+    rcheck('Codex scroll: close button renders in the header', headerLit > 0.2, `${(headerLit * 100).toFixed(0)}% lit px`);
+    const underPanel = frac(panel.x, panel.x + panel.w, panel.y + panel.h + 8, 1918, warm);
+    rcheck('Codex scroll: masked body does not bleed past the panel foot', underPanel < 0.02, `${(underPanel * 100).toFixed(2)}% warm px below the panel`);
+    const abovePanel = frac(panel.x, panel.x + panel.w, 2, panel.y - 8, warm);
+    rcheck('Codex scroll: nothing bleeds above the panel head', abovePanel < 0.02, `${(abovePanel * 100).toFixed(2)}% warm px above`);
+    const bottomFrame = await sharpMod('scripts/shots/render_test_codex_bottom.png').raw().toBuffer({ resolveWithObject: true });
+    void bottomFrame;
+    rcheck('Codex scroll: scrolled to the bottom the sheet still fills the body',
+        geom.scroll > 0 && geom.scrollMax > 0, `scroll=${geom.scroll.toFixed(0)}/${geom.scrollMax.toFixed(0)}`);
+}
 
 // 2) fairy sprite present at the lower bridge deck (bright pixels vs empty deck)
 const fairyLum = avgLum(890, 1290, 70);

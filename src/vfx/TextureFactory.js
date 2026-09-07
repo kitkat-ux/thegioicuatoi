@@ -588,9 +588,9 @@ export function ensureFallbackTextures(scene) {
     if (!scene.textures.exists('icon_spirit_stone')) {
         drawSpiritStoneIconFallback(scene);
     }
-    if (!scene.textures.exists('bridge_pavilion')) {
-        drawBridgePavilionFallback(scene);
-    }
+    // NOTE: bridge_pavilion is intentionally NOT fallback-generated.
+    // bg_manor_isometric already contains the complete pavilion/bridge scenery.
+    // Any overlay at (150-350,700-900) would create a faux-checkerboard artifact.
     for (const icon of ['icon_seed_drawer', 'icon_water_bucket', 'icon_search']) {
         if (!scene.textures.exists(icon)) {
             console.warn(`[TextureFactory] ${icon} missing — using procedural fallback`);
@@ -908,54 +908,6 @@ function drawSpiritStoneIconFallback(scene) {
     });
 }
 
-/**
- * Bridge/Pavilion decoration — a small arched bridge with a traditional
- * Vietnamese/Chinese pavilion roof, placed at the edge of the garden.
- */
-function drawBridgePavilionFallback(scene) {
-    canvasTex(scene, 'bridge_pavilion', 320, 240, (ctx, w, h) => {
-        // arch bridge
-        ctx.fillStyle = '#3a2810';
-        ctx.beginPath();
-        ctx.moveTo(20, h * 0.75);
-        ctx.quadraticCurveTo(w / 2, h * 0.4, w - 20, h * 0.75);
-        ctx.lineTo(w - 20, h * 0.85);
-        ctx.quadraticCurveTo(w / 2, h * 0.5, 20, h * 0.85);
-        ctx.closePath();
-        ctx.fill();
-        // bridge rails
-        ctx.strokeStyle = '#d8a24e';
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.moveTo(30, h * 0.7);
-        ctx.quadraticCurveTo(w / 2, h * 0.35, w - 30, h * 0.7);
-        ctx.stroke();
-        // rail posts
-        for (let i = 0; i < 5; i++) {
-            const t = (i + 0.5) / 5;
-            const x = 30 + t * (w - 60);
-            const topY = h * 0.7 - Math.sin(t * Math.PI) * (h * 0.35);
-            ctx.fillStyle = '#d8a24e';
-            ctx.fillRect(x - 3, topY, 6, h * 0.12);
-        }
-        // pavilion roof
-        ctx.fillStyle = '#4a1e20';
-        ctx.beginPath();
-        ctx.moveTo(w / 2, h * 0.08);
-        ctx.lineTo(w * 0.18, h * 0.32);
-        ctx.quadraticCurveTo(w / 2, h * 0.28, w * 0.82, h * 0.32);
-        ctx.closePath();
-        ctx.fill();
-        // roof edge
-        ctx.strokeStyle = '#d8a24e';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(w * 0.15, h * 0.33);
-        ctx.quadraticCurveTo(w / 2, h * 0.28, w * 0.85, h * 0.33);
-        ctx.stroke();
-        // pillars
-        ctx.fillStyle = '#5a2020';
-        ctx.fillRect(w * 0.3, h * 0.32, 8, h * 0.3);
-        ctx.fillRect(w * 0.65, h * 0.32, 8, h * 0.3);
-    });
-}
+// drawBridgePavilionFallback REMOVED — bg_manor_isometric already contains
+// the complete pavilion/bridge. No duplicate overlay should ever be rendered
+// at (150-350,700-900) to avoid faux-checkerboard artifacts.

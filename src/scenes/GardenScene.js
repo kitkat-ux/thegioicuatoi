@@ -11,6 +11,8 @@ import { EventManager, EVENTS } from '../systems/EventManager.js';
 import { CodexManager } from '../systems/CodexManager.js';
 import { WeatherSystem, PHASE, CONDITION } from '../systems/WeatherSystem.js';
 import { CodexModal } from '../ui/CodexModal.js';
+import FishingModal from '../ui/FishingModal.js';
+import { FISHING_TEXTURES } from '../data/FishingAssetManifest.js';
 import { AlchemyManager } from '../systems/AlchemyManager.js';
 import { AlchemyModal } from '../ui/AlchemyModal.js';
 
@@ -109,6 +111,7 @@ export default class GardenScene extends Phaser.Scene {
         this.bus = null;          // EventManager — the single inter-system channel
         this.codex = null;        // System 9: Vạn Hoa Đồ Giám (state + rules)
         this.codexModal = null;   // System 9: scroll UI + HUD button
+        this.fishingModal = null; // presentation-only fishing pier UI
         this.weather = null;      // System 8: Thiên Thời Tứ Thời (simulation)
         this.weatherView = null;  // System 8: ambient light / rain renderer
         this.codexBuffs = null;   // last aggregated codex buffs
@@ -144,17 +147,23 @@ export default class GardenScene extends Phaser.Scene {
         for (const a of assets) {
             this.load.image(a, `./assets/images/${a}.png`);
         }
+        // Fishing art is kept in its own namespace and described by the
+        // integration manifest, so the modal and preload can never drift.
+        const fishingAssets = Object.values(FISHING_TEXTURES);
+        for (const asset of fishingAssets) this.load.image(asset.key, asset.path);
+
         // Log any 404 failures so missing assets are immediately visible
         // in the browser console instead of silently falling back to canvas.
         this.load.on('loaderror', (file) => {
             console.error(`[GardenScene] 404 / load error: ${file.key} (${file.url}) — fallback texture will be generated`);
         });
         this.load.on('complete', () => {
-            const missing = assets.filter((k) => !this.textures.exists(k));
+            const fishingKeys = fishingAssets.map((asset) => asset.key);
+            const missing = [...assets, ...fishingKeys].filter((k) => !this.textures.exists(k));
             if (missing.length) {
                 console.warn(`[GardenScene] Assets missing after preload (fallbacks will be used): ${missing.join(', ')}`);
             } else {
-                console.log(`[GardenScene] All ${assets.length} image assets loaded OK (no fallbacks triggered)`);
+                console.log(`[GardenScene] All ${assets.length + fishingKeys.length} image assets loaded OK (no fallbacks triggered)`);
             }
         });
     }
@@ -210,6 +219,8 @@ export default class GardenScene extends Phaser.Scene {
         this.weatherView = new WeatherView(this, this.weather, this.bus).create();
         this.createWeatherChip();
         this.codexModal = new CodexModal(this, { codex: this.codex, bus: this.bus, audio: this.audio }).create();
+        this.fishingModal = new FishingModal(this, { audio: this.audio }).create();
+        this.createFishingEntryPoint();
         this.alchemyModal = new AlchemyModal(this, { alchemy: this.alchemy, bus: this.bus, audio: this.audio }).create();
 
         this.createMist();
@@ -249,6 +260,7 @@ export default class GardenScene extends Phaser.Scene {
 
     /** Tear every system down with the scene (bus listeners included). */
     shutdown() {
+        this.fishingModal?.destroy();
         this.alchemyModal?.destroy();
         this.codexModal?.destroy();
         this.weatherView?.destroy();
@@ -387,6 +399,33 @@ export default class GardenScene extends Phaser.Scene {
         });
         this.weatherChip.add(zone);
         this.drawWeatherChip();
+    }
+
+    /** Small HUD entry point for the presentation-only fishing modal. */
+    createFishingEntryPoint() {
+        const button = this.add.container(700, 302).setDepth(D.HUD);
+        const bg = this.add.graphics();
+        bg.fillStyle(0x1a0f2e, 0.9).lineStyle(2, C.tealGlow ?? C.cyan, 0.8);
+        bg.fillRoundedRect(-112, -34, 224, 68, 16).strokeRoundedRect(-112, -34, 224, 68, 16);
+        const icon = this.add.image(-76, 0, FISHING_TEXTURES.bobber.key).setDisplaySize(58, 58);
+        const label = this.add.text(-42, -2, 'Câu Cá', {
+            fontFamily: DIALOG_FONT, fontSize: '23px', color: '#d7fff0', fontStyle: 'bold',
+            stroke: '#123d4d', strokeThickness: 4,
+        }).setOrigin(0, 0.5);
+        const sub = this.add.text(-42, 21, 'Hồ Tiên', {
+            fontFamily: DIALOG_FONT, fontSize: '16px', color: '#83d9c5',
+            stroke: '#123d4d', strokeThickness: 3,
+        }).setOrigin(0, 0.5);
+        const zone = this.add.zone(0, 0, 224, 68).setInteractive({ useHandCursor: true });
+        zone.on('pointerdown', () => {
+            this.audio?.ensure?.();
+            this.fishingModal?.open();
+        });
+        zone.on('pointerover', () => bg.lineStyle(3, 0xbaf5d8, 1).strokeRoundedRect(-112, -34, 224, 68, 16));
+        zone.on('pointerout', () => bg.lineStyle(2, C.tealGlow ?? C.cyan, 0.8).strokeRoundedRect(-112, -34, 224, 68, 16));
+        button.add([bg, icon, label, sub, zone]);
+        this.fishingButton = button;
+        this.tweens.add({ targets: button, y: { from: 302, to: 298 }, duration: 2200, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
     }
 
     drawWeatherChip() {
@@ -867,6 +906,16 @@ export default class GardenScene extends Phaser.Scene {
 
     /** True when a full-screen overlay (drawer / dialog / codex / alchemy / ad) is up. */
     uiBlocked() {
+        return !!(this.drawerOpen || this.dialogVisible || this.adWatching || this.codexModal?.isOpen() || this.fishingModal?.isOpen());
+    }
+
+    /** Open the presentation-only fishing pier UI. */
+    openFishing() {
+        this.fishingModal?.open();
+    }
+
+    closeFishing() {
+        this.fishingModal?.close();
         return !!(this.drawerOpen || this.dialogVisible || this.adWatching
             || this.codexModal?.isOpen() || this.alchemyModal?.isOpen());
     }

@@ -29,6 +29,7 @@ export const LAYERS = {
     DIALOG: 1400,
     MODAL: 1500,
     CODEX: 1550,
+    FISHING: 1575, // fishing pier modal and its presentation-only mock motion
     TOAST: 1600,
 };
 

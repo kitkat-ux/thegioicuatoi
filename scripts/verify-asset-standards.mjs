@@ -14,11 +14,13 @@
 // Usage: node scripts/verify-asset-standards.mjs
 import fs from 'fs';
 import path from 'path';
+import { pathToFileURL } from 'url';
 import sharp from 'sharp';
 
 const OUT = 'public/assets/images';
 const sceneSrc = fs.readFileSync('src/scenes/GardenScene.js', 'utf8');
 const preload = [...(sceneSrc.match(/const assets = \[([\s\S]*?)\]/)?.[1] ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1]);
+const { FISHING_ASSET_MANIFEST } = await import(pathToFileURL(path.resolve('src/data/FishingAssetManifest.js')).href);
 
 // Sprites keyed off a flat studio background (never full-bleed).
 const KEYED_MAX_EDGE = { icon: 192, sprite: 768 };
@@ -107,8 +109,44 @@ for (const f of files) {
     );
 }
 
+/* ------------------------- Fishing art contract -------------------------
+   Fishing assets live outside the garden catalogue on purpose, but they use
+   the same 8-bit RGBA/true-alpha gate. The pier is a full rectangular plate;
+   the rod, koi, bobber and gauge are keyed sprites with transparent corners. */
+const fishingDir = 'public/assets/fishing';
+const fishingFiles = fs.readdirSync(fishingDir).filter((f) => f.endsWith('.png')).sort();
+const fishingTextures = Object.values(FISHING_ASSET_MANIFEST.textures);
+const fishingExpected = fishingTextures.map((asset) => asset.path.split('/').pop()).sort();
+const fishingByFile = new Map(fishingTextures.map((asset) => [asset.path.split('/').pop(), asset]));
+check('fishing manifest files exist on disk', fishingExpected.every((f) => fishingFiles.includes(f)), `${fishingExpected.length} manifest files / ${fishingFiles.length} PNGs`);
+check('no orphan assets in public/assets/fishing', fishingFiles.every((f) => fishingExpected.includes(f)), fishingFiles.filter((f) => !fishingExpected.includes(f)).join(', ') || 'none');
+
+for (const f of fishingFiles) {
+    const p = path.join(fishingDir, f);
+    const { data, info } = await sharp(p).raw().toBuffer({ resolveWithObject: true });
+    const meta = await sharp(p).metadata();
+    const total = info.width * info.height;
+    const isPier = f === 'pier_background.png';
+    let transparent = 0;
+    let semi = 0;
+    for (let i = 0; i < total; i++) {
+        const alpha = info.channels === 4 ? data[i * info.channels + 3] : 255;
+        if (alpha === 0) transparent++;
+        else if (alpha < 255) semi++;
+    }
+    const cornersTransparent = isPier || (info.channels === 4 && [[2, 2], [info.width - 3, 2], [2, info.height - 3], [info.width - 3, info.height - 3]]
+        .every(([x, y]) => data[(y * info.width + x) * info.channels + 3] === 0));
+    const maxEdge = Math.max(info.width, info.height);
+    const ok = meta.format === 'png' && meta.depth === 'uchar' && info.channels === 4 &&
+        (isPier || transparent + semi > total * 0.02) && cornersTransparent &&
+        (isPier ? info.width === fishingByFile.get(f)?.frameWidth && info.height === fishingByFile.get(f)?.frameHeight : maxEdge <= 1536);
+    check(`fishing art: ${f}`, ok,
+        `${info.width}x${info.height} ch=${info.channels} depth=${meta.depth} ` +
+        `alpha: ${(transparent * 100 / total).toFixed(0)}% transparent`);
+}
+
 console.log(fails === 0
-    ? `\nASSET STANDARDS OK — ${files.length} files are clean 32-bit RGBA with true alpha, no faux checkerboard, no key residue` +
+    ? `\nASSET STANDARDS OK — ${files.length} garden files + ${fishingFiles.length} fishing files are clean 32-bit RGBA with true alpha, no faux checkerboard, no key residue` +
       (warnings ? ` (${warnings} warning(s))` : '')
     : `\n${fails} ASSET(S) VIOLATE 07_VISUAL_ASSET_CATALOG.md`);
 process.exit(fails ? 1 : 0);

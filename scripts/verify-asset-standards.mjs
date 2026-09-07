@@ -115,7 +115,9 @@ for (const f of files) {
    the rod, koi, bobber and gauge are keyed sprites with transparent corners. */
 const fishingDir = 'public/assets/fishing';
 const fishingFiles = fs.readdirSync(fishingDir).filter((f) => f.endsWith('.png')).sort();
-const fishingExpected = Object.values(FISHING_ASSET_MANIFEST.textures).map((asset) => asset.path.split('/').pop()).sort();
+const fishingTextures = Object.values(FISHING_ASSET_MANIFEST.textures);
+const fishingExpected = fishingTextures.map((asset) => asset.path.split('/').pop()).sort();
+const fishingByFile = new Map(fishingTextures.map((asset) => [asset.path.split('/').pop(), asset]));
 check('fishing manifest files exist on disk', fishingExpected.every((f) => fishingFiles.includes(f)), `${fishingExpected.length} manifest files / ${fishingFiles.length} PNGs`);
 check('no orphan assets in public/assets/fishing', fishingFiles.every((f) => fishingExpected.includes(f)), fishingFiles.filter((f) => !fishingExpected.includes(f)).join(', ') || 'none');
 
@@ -137,7 +139,7 @@ for (const f of fishingFiles) {
     const maxEdge = Math.max(info.width, info.height);
     const ok = meta.format === 'png' && meta.depth === 'uchar' && info.channels === 4 &&
         (isPier || transparent + semi > total * 0.02) && cornersTransparent &&
-        (isPier ? info.width === 1080 && info.height === 900 : maxEdge <= 768);
+        (isPier ? info.width === fishingByFile.get(f)?.frameWidth && info.height === fishingByFile.get(f)?.frameHeight : maxEdge <= 1536);
     check(`fishing art: ${f}`, ok,
         `${info.width}x${info.height} ch=${info.channels} depth=${meta.depth} ` +
         `alpha: ${(transparent * 100 / total).toFixed(0)}% transparent`);

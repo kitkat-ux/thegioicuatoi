@@ -13,6 +13,7 @@ export const SEED_CATALOG = [
         color_hex: '#00E5FF',
         petals: 0x7ff7ff,
         growthMs: 15000,
+        rarity: 'common',
         search_keywords: ['tinh', 'xanh', 'cyan', 'blue', 'orchid', 'lam', 'trạch', 'da', 'u dam', '蓝', '蓝'],
     },
     {
@@ -24,6 +25,7 @@ export const SEED_CATALOG = [
         color_hex: '#B26BFF',
         petals: 0xc98bff,
         growthMs: 20000,
+        rarity: 'uncommon',
         search_keywords: ['hong', 'ha', 'purple', 'tim', 'violet', 'wisteria', 'hoa', 'tím', '紫'],
     },
     {
@@ -35,6 +37,7 @@ export const SEED_CATALOG = [
         color_hex: '#FFD700',
         petals: 0xffe08a,
         growthMs: 25000,
+        rarity: 'rare',
         search_keywords: ['vang', 'kim', 'gold', 'dai', 'amber', 'yellow', 'huyn', 'vàng', '金', '黃'],
     },
     {
@@ -46,7 +49,20 @@ export const SEED_CATALOG = [
         color_hex: '#2E8B57',
         petals: 0x7dffb6,
         growthMs: 10000,
+        rarity: 'common',
         search_keywords: ['truc', 'luc', 'green', 'emerald', 'jade', 'bich', 'thanh', 'lục', '绿', '綠'],
+    },
+    {
+        id: 'flower_rare_nguyet_cuc',
+        sprite_key: 'flower_rare',
+        name: 'Nguyệt Cúc Thiên Hà',
+        english: 'Celestial Galaxy Chrysanthemum',
+        colorName: 'Ngân Hà · Galaxy',
+        color_hex: '#E8B4FF',
+        petals: 0xe8b4ff,
+        growthMs: 30000,
+        rarity: 'legendary',
+        search_keywords: ['nguyet', 'cuc', 'thien', 'ha', 'galaxy', 'chrysanthemum', 'silver', 'bac', 'hiem', 'rare', 'nguyệt', '菊', '月'],
     },
 ];
 
@@ -71,6 +87,6 @@ for (const seed of SEED_CATALOG) {
             seed.color_hex,
             seed.sprite_key,
             ...seed.search_keywords,
-        ].join(' ')
+        ].join(' '),
     );
 }

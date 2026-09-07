@@ -13,6 +13,8 @@ import { WeatherSystem, PHASE, CONDITION } from '../systems/WeatherSystem.js';
 import { CodexModal } from '../ui/CodexModal.js';
 import FishingModal from '../ui/FishingModal.js';
 import { FISHING_TEXTURES } from '../data/FishingAssetManifest.js';
+import { AlchemyManager } from '../systems/AlchemyManager.js';
+import { AlchemyModal } from '../ui/AlchemyModal.js';
 
 const W = 1080;
 const H = 1920;
@@ -114,6 +116,9 @@ export default class GardenScene extends Phaser.Scene {
         this.weatherView = null;  // System 8: ambient light / rain renderer
         this.codexBuffs = null;   // last aggregated codex buffs
         this.rainWatering = false;
+        // Phase-2 systems
+        this.alchemy = null;      // System 5: Lò Luyện Đan (furnace + elixir buffs)
+        this.alchemyModal = null; // System 5: bronze cauldron UI + HUD medallion
     }
 
     /* ============================ PRELOAD ============================ */
@@ -188,6 +193,10 @@ export default class GardenScene extends Phaser.Scene {
         // System 8 — Thiên Thời Tứ Thời: day/night + spring rain simulation
         this.weather = new WeatherSystem().bind(this.bus);
 
+        // System 5 — Lò Luyện Đan: learns herbs from harvest/watering facts on
+        // the bus; its elixir buffs come back through ELIXIR_CONSUMED.
+        this.alchemy = new AlchemyManager().bind(this.bus);
+
         // Background covers 1080x1920
         this.add.image(W / 2, H / 2, 'bg_manor_isometric').setDisplaySize(W, H).setDepth(D.BG);
 
@@ -212,6 +221,7 @@ export default class GardenScene extends Phaser.Scene {
         this.codexModal = new CodexModal(this, { codex: this.codex, bus: this.bus, audio: this.audio }).create();
         this.fishingModal = new FishingModal(this, { audio: this.audio }).create();
         this.createFishingEntryPoint();
+        this.alchemyModal = new AlchemyModal(this, { alchemy: this.alchemy, bus: this.bus, audio: this.audio }).create();
 
         this.createMist();
         this.createParticleEmitters();
@@ -243,17 +253,46 @@ export default class GardenScene extends Phaser.Scene {
         b.on(EVENTS.CODEX_ENTRY_UPDATED, () => this.applyCodexBuffs(), { owner: 'garden' });
         // UI intents coming from other systems (NPC dialog → codex scroll)
         b.on(EVENTS.CODEX_OPEN_REQUEST, () => this.openCodex(), { owner: 'garden' });
+        // System 5 gameplay buffs: the furnace publishes, the garden applies.
+        b.on(EVENTS.ELIXIR_CONSUMED, (p) => this.onElixirConsumed(p), { owner: 'garden' });
+        b.on(EVENTS.ALCHEMY_BUFF_EXPIRED, (p) => this.onAlchemyBuffExpired(p), { owner: 'garden' });
     }
 
     /** Tear every system down with the scene (bus listeners included). */
     shutdown() {
         this.fishingModal?.destroy();
+        this.alchemyModal?.destroy();
         this.codexModal?.destroy();
         this.weatherView?.destroy();
+        this.alchemy?.unbind();
         this.codex?.unbind();
         this.weather?.unbind();
         this.bus?.clear();
         this.audio?.setRain?.(false);
+    }
+
+    /**
+     * System 5 elixir buffs arrive over the bus — the scene never calls
+     * alchemy.consume() for its own sake. Timed buffs show in the hint line;
+     * the instant Vạn Thọ Linh Dịch waters the whole garden (mirrors the rain
+     * irrigation buff pattern).
+     */
+    onElixirConsumed({ recipe = null, buff = null } = {}) {
+        this.audio?.ensure?.();
+        if (buff?.type === 'auto_water') {
+            this.waterAll('van-tho-linh-dich');
+            this.flashHint(`${recipe?.name ?? 'Vạn Thọ Linh Dịch'} — linh dịch tưới khắp hoa viên ✦`);
+            return;
+        }
+        if (buff?.durationMs) {
+            const minutes = Math.round(buff.durationMs / 60000);
+            this.flashHint(`${buff.label}: ${recipe?.description ?? ''} (${minutes} phút) ✦`);
+        }
+    }
+
+    /** A timed elixir buff ran out — let the gardener know on the hint line. */
+    onAlchemyBuffExpired({ label = '' } = {}) {
+        this.flashHint(`Linh đan ${label} đã tan — hoa viên trở về nhịp thường ✧`);
     }
 
     /** Re-read the aggregated codex buffs (harvest multipliers + skins). */
@@ -330,6 +369,9 @@ export default class GardenScene extends Phaser.Scene {
         }
         if (!this.weather) return;
         const changes = this.weather.tick(delta);
+        // System 5: the furnace + buff timers run on the wall clock; the
+        // modal listens to the ALCHEMY_* bus events for its countdown UI.
+        this.alchemy?.tick(delta);
         this.weatherView?.update(delta);
         if (changes?.phaseChanged || changes?.conditionChanged) this.updateWeatherHud();
     }
@@ -467,10 +509,15 @@ export default class GardenScene extends Phaser.Scene {
         return dry.length;
     }
 
-    /** Codex growth buff shortens the bloom stagger (1 = default pacing). */
+    /**
+     * Bloom stagger pacing. Codex growth buff and the Tụ Khí Đan elixir
+     * (System 5, +20% bloom speed) both shorten the cascade — each system
+     * publishes, the scene composes; neither knows the other exists.
+     */
     bloomStaggerMs() {
-        const mult = this.codexBuffs?.growthMult ?? 1;
-        return Math.max(40, Math.round(90 * mult));
+        const codexMult = this.codexBuffs?.growthMult ?? 1;
+        const alchemyMult = this.alchemy?.getBuffs()?.growthMult ?? 1;
+        return Math.max(40, Math.round(90 * codexMult * alchemyMult));
     }
 
 
@@ -857,7 +904,7 @@ export default class GardenScene extends Phaser.Scene {
         }
     }
 
-    /** True when a full-screen overlay (drawer / dialog / codex / ad) is up. */
+    /** True when a full-screen overlay (drawer / dialog / codex / alchemy / ad) is up. */
     uiBlocked() {
         return !!(this.drawerOpen || this.dialogVisible || this.adWatching || this.codexModal?.isOpen() || this.fishingModal?.isOpen());
     }
@@ -869,6 +916,8 @@ export default class GardenScene extends Phaser.Scene {
 
     closeFishing() {
         this.fishingModal?.close();
+        return !!(this.drawerOpen || this.dialogVisible || this.adWatching
+            || this.codexModal?.isOpen() || this.alchemyModal?.isOpen());
     }
 
     /** Open the Vạn Hoa Đồ Giám scroll (also callable from tests / NPC dialog). */

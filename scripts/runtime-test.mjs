@@ -535,6 +535,56 @@ scene.weather.forcePhase('day');
     check('Codex state survives a save/load round trip', c2.getDiscoveredCount() === cc.entries ? true : c2.getProgress().discovered === Object.values(cc.entries).filter((e) => e.discovered).length);
 }
 
+/* ==================== PHASE 2 · System 5: Lò Luyện Đan (Alchemy) ==================== */
+check('Alchemy system bound to the bus (no direct scene→alchemy writes)', !!scene.alchemy && scene.alchemy.bus === scene.bus);
+check('Alchemy HUD medallion sits on the top HUD below the codex scroll', (() => {
+    const b = scene.alchemyModal?.buttonPos;
+    return !!scene.alchemyModal?.button && scene.alchemyModal.button.depth >= LAYERS.HUD
+        && b && b.x > 800 && b.y > 380 && b.y < 560;
+})());
+// furnace: a valid run is accepted, the slot is single, ingredients are consumed
+scene.alchemy.grant({ u_dam: 1 }); // starter kit 2 U Đàm + 1 = recipe-complete
+const alchCraft = scene.alchemy.craft('tu_khi_dan');
+check('Alchemy craft accepted with valid ingredients', alchCraft.success === true);
+const alchBusy = scene.alchemy.craft('tay_tui_dan');
+check('Furnace is single-slot (FURNACE_BUSY while a run is live)', alchBusy.reason === 'FURNACE_BUSY');
+scene.alchemy.tick(16, alchCraft.endsAt + 1); // fast-forward the 45s wall-clock run
+check('Furnace resolved once the countdown elapsed', scene.alchemy.getCrafting() === null);
+check('The run produced a shelf elixir or a recorded failure',
+    scene.alchemy.stats.totalSuccess + scene.alchemy.stats.totalFailed === 1);
+
+// buff path: ELIXIR_CONSUMED is the only channel between furnace and garden
+scene.alchemy.grantElixir('tu_khi_dan', 1);
+const staggerBefore = scene.bloomStaggerMs();
+scene.alchemy.consume('tu_khi_dan');
+check('Tụ Khí Đan published ELIXIR_CONSUMED on the bus', scene.bus.wasEmitted('ELIXIR_CONSUMED'));
+check('Bloom stagger shortens ~20% while the elixir is active', scene.bloomStaggerMs() < staggerBefore);
+
+// the instant Vạn Thọ Linh Dịch must water every unwatered plot through the bus
+const alchTile = scene.tiles[5][5];
+scene.plantSeed(alchTile);
+scene.alchemy.grantElixir('van_tho_linh_dich', 1);
+scene.alchemy.consume('van_tho_linh_dich');
+await new Promise((r) => setTimeout(r, 300));
+check('Vạn Thọ Linh Dịch auto-watered the garden via the bus', alchTile.gridData.watered === true);
+
+// timed buff expiry through the tick clock
+scene.alchemy.tick(16, Date.now() + 10 * 60_000 + 500);
+check('Timed elixir buff expires after 10 minutes',
+    scene.alchemy.getBuffs().active.length === 0 && scene.alchemy.getBuffs().growthMult === 1);
+
+// modal: medallion opens the cauldron overlay, CTA + counts render
+scene.alchemyModal.open();
+await new Promise((r) => setTimeout(r, 350));
+check('Alchemy modal opens with the cauldron overlay',
+    scene.alchemyModal.isOpen() === true && scene.alchemyModal.root.visible === true);
+check('Alchemy CTA + snapshot render (countdown/claim/ingredient states)',
+    scene.alchemyModal.getSnapshot().ctaLabel.length > 0
+    && scene.alchemyModal.getSnapshot().elixirCount.length === 3);
+scene.alchemyModal.close();
+await new Promise((r) => setTimeout(r, 350));
+check('Alchemy modal closes cleanly', scene.alchemyModal.isOpen() === false);
+
 // ---- Rare seed in catalog ----
 const rareCard = scene.seedCards.find(c => c.seed.id === 'flower_rare_nguyet_cuc');
 check('rare seed card exists in drawer', rareCard !== undefined);

@@ -9,6 +9,7 @@ import { EconomySystem, SEED_RARITY, QUESTS, ECONOMY_DEFAULTS } from '../src/sys
 import { DialogSystem, NPC_DIALOGUE, DIALOG_FONT } from '../src/systems/DialogSystem.js';
 import { EventManager, EVENTS } from '../src/systems/EventManager.js';
 import { CodexManager } from '../src/systems/CodexManager.js';
+import { AlchemyManager, ALCHEMY_RECIPES, HERB_BY_SEED } from '../src/systems/AlchemyManager.js';
 import {
     WeatherSystem, PHASE, CONDITION, AMBIENT, SEASONS, WEATHER_DEFAULTS,
 } from '../src/systems/WeatherSystem.js';
@@ -495,7 +496,68 @@ check('quest rows: completion by value (green_thumb at 10 blooms)', (() => {
     check('No system imports another system (bus-only coupling)',
         !/from '\.\/CodexManager\.js'/.test(read('src/systems/WeatherSystem.js')) &&
         !/from '\.\/WeatherSystem\.js'/.test(read('src/systems/CodexManager.js')) &&
-        !/from '\.\/CodexModal\.js'/.test(read('src/systems/CodexManager.js')));
+        !/from '\.\/CodexModal\.js'/.test(read('src/systems/CodexManager.js')) &&
+        !/from '\.\/AlchemyManager\.js'/.test(read('src/systems/BreedingManager.js')) &&
+        !/from '\.\/BreedingManager\.js'/.test(read('src/systems/AlchemyManager.js')));
+}
+
+/* ==========================================================================
+   PHASE 2 — System 5: Lò Luyện Đan (AlchemyManager)
+   ========================================================================== */
+{
+    check('EVENTS registry exposes the stable ELIXIR_CONSUMED channel', EVENTS.ELIXIR_CONSUMED === 'ELIXIR_CONSUMED');
+    check('Alchemy recipe table carries the three spec recipes in order',
+        ALCHEMY_RECIPES.map((r) => r.id).join() === 'tu_khi_dan,tay_tui_dan,van_tho_linh_dich');
+    check('U Đàm drops from the cyan orchid harvest', HERB_BY_SEED.flower_cyan_orchid === 'u_dam');
+    check('Huyết Kế drops from the wisteria harvest', HERB_BY_SEED.flower_purple_wisteria === 'huyet_ke');
+
+    let t = 0;
+    const alch = new AlchemyManager({ now: () => t, random: () => 0.5 });
+    alch.grant({ u_dam: 1 });
+    const started = alch.craft('tu_khi_dan');
+    check('Craft deducts the full ingredient set (3 U Đàm + 1 Linh Dịch)',
+        started.success === true && alch.getHerb('u_dam') === 0 && alch.getHerb('linh_dich') === 0);
+    t = started.endsAt + 1;
+    const resolved = alch.tick(16);
+    check('Furnace resolves at the 45s deadline (roll 0.5 < 0.85)',
+        resolved.craftResolved?.success === true && alch.getElixir('tu_khi_dan') === 1);
+    t += 1000;
+    const consumed = alch.consume('tu_khi_dan');
+    check('Consumed Tụ Khí Đan grants +20% bloom speed for 10 minutes',
+        consumed.success === true && consumed.buff.durationMs === 600_000
+        && Math.abs(alch.getBuffs().growthMult - 1 / 1.2) < 1e-12);
+    t += 600_001;
+    alch.tick(16);
+    check('Timed elixir buff expires after its 10 minutes', alch.getBuffs().active.length === 0);
+
+    // bus-only coupling: gameplay facts feed the herbs, ELIXIR_CONSUMED leaves
+    const bus3 = new EventManager();
+    const alch2 = new AlchemyManager({ now: () => t }).bind(bus3);
+    let elixirEvent = null;
+    bus3.on(EVENTS.ELIXIR_CONSUMED, (p) => { elixirEvent = p; });
+    bus3.emit(EVENTS.FLOWER_HARVESTED, { seedId: 'flower_cyan_orchid' });
+    bus3.emit(EVENTS.TILE_WATERED, { row: 0, col: 0, source: 'watering-can' });
+    check('Alchemistry learns herbs from bus facts alone',
+        alch2.getHerb('u_dam') === 3); // starter 2 + 1 harvest
+    alch2.grantElixir('van_tho_linh_dich', 1);
+    alch2.consume('van_tho_linh_dich');
+    check('Vạn Thọ Linh Dịch publishes auto_water on ELIXIR_CONSUMED',
+        elixirEvent?.buff?.type === 'auto_water' && elixirEvent?.buff?.expiresAt === null);
+
+    check('Alchemy state round-trips through serialize/deserialize', (() => {
+        const alch3 = new AlchemyManager({ now: () => t }).deserialize(JSON.parse(JSON.stringify(alch.serialize())));
+        return alch3.getElixir('tu_khi_dan') === 0 && alch3.stats.totalConsumed === 1;
+    })());
+
+    const root = path.resolve(new URL('.', import.meta.url).pathname, '..');
+    const read2 = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+    const scene2 = read2('src/scenes/GardenScene.js');
+    check('Scene ticks the furnace each frame and applies ELIXIR_CONSUMED',
+        /this\.alchemy\?\.tick\(delta\)/.test(scene2) && /b\.on\(EVENTS\.ELIXIR_CONSUMED/.test(scene2));
+    check('Scene composes the elixir growth buff into the bloom stagger',
+        /getBuffs\(\)\?\.growthMult/.test(scene2));
+    check('Alchemy modal wired with HUD medallion (no scene layout changes)',
+        /new AlchemyModal\(this,/.test(scene2) && read2('src/ui/AlchemyModal.js').length > 500);
 }
 
 console.log(fails === 0 ? '\nALL TESTS PASSED' : `\n${fails} TEST(S) FAILED`);

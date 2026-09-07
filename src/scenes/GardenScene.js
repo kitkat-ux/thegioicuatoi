@@ -69,6 +69,10 @@ export default class GardenScene extends Phaser.Scene {
 
     /* ============================ PRELOAD ============================ */
     preload() {
+        // All asset keys below MUST match a file in public/assets/images/<key>.png.
+        // Vite serves the public/ directory at the site root; the leading
+        // "./" ensures Phaser's loader resolves URLs correctly regardless
+        // of the page path (avoids 404s that would trigger procedural fallbacks).
         const assets = [
             'bg_manor_isometric',
             'tile_soil',
@@ -86,8 +90,21 @@ export default class GardenScene extends Phaser.Scene {
             'bridge_pavilion',
         ];
         for (const a of assets) {
-            this.load.image(a, `assets/images/${a}.png`);
+            this.load.image(a, `./assets/images/${a}.png`);
         }
+        // Log any 404 failures so missing assets are immediately visible
+        // in the browser console instead of silently falling back to canvas.
+        this.load.on('loaderror', (file) => {
+            console.error(`[GardenScene] 404 / load error: ${file.key} (${file.url}) — fallback texture will be generated`);
+        });
+        this.load.on('complete', () => {
+            const missing = assets.filter((k) => !this.textures.exists(k));
+            if (missing.length) {
+                console.warn(`[GardenScene] Assets missing after preload (fallbacks will be used): ${missing.join(', ')}`);
+            } else {
+                console.log(`[GardenScene] All ${assets.length} image assets loaded OK (no fallbacks triggered)`);
+            }
+        });
     }
 
     /* ============================ BOOT ============================ */

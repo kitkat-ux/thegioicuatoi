@@ -51,6 +51,9 @@ export const EVENTS = {
     CODEX_MILESTONE: 'codex:milestone-unlocked',
     CODEX_BUFFS_CHANGED: 'codex:buffs-changed',
 
+    /* system 4 — Linh Hoa Dị Biến */
+    BREEDING_SUCCESS: 'BREEDING_SUCCESS',
+
     /* UI */
     CODEX_OPEN_REQUEST: 'ui:codex-open-request',
     CODEX_OPENED: 'ui:codex-opened',

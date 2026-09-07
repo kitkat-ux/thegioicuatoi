@@ -134,6 +134,26 @@ scripts/
   alchemy crafting, visitor orders, Feng Shui buffs, dynamic weather, flora
   codex, idle automation).
 
+## Input, tools & economy rules (mobile hardening)
+
+- **Modals never auto-close from an inside tap.** Every overlay (Alchemy,
+  Fishing, Beast, water modal) has an invisible *panel shield* between the
+  panel art and its widgets; it and every button call
+  `event.stopPropagation()` on `pointerdown`, and the backdrop only closes when
+  the pointer is geometrically outside the panel rect (`src/ui/modalInput.js`).
+- **One tool, one verb.** `GardenScene.activeTool` is `SEED`, `SICKLE` or
+  `NONE`. The sickle (Thu Hoạch ✦) only harvests blooming plots and leaves them
+  empty — it returns before any planting logic and never re-seeds. A selected
+  seed only plants on empty plots and never harvests.
+- **Đá Linh Khí (diamonds) are real.** `EconomySystem.bind(bus)` publishes
+  `EVENTS.DIAMONDS_CHANGED` on every balance move (seed purchase, quick-water,
+  harvest, quest, ad) and the HUD re-reads it. Premium seeds are bought from the
+  drawer (or auto-bought on planting); instant **quick-watering costs 1 💎**
+  (2 💎 for >12 plots). If the balance is short, a notice dialog is shown and
+  nothing grows — the rewarded ad, spring rain and Vạn Thọ elixir stay free.
+- **Safe area.** The HUD title sits 30 px lower (`SAFE_TOP`) and the page shell
+  pads `env(safe-area-inset-top)` so phone notches never cover it.
+
 ## Testing
 
 ```bash

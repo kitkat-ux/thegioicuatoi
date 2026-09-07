@@ -29,6 +29,15 @@ export const ECONOMY_DEFAULTS = {
         flower_golden_amber: 10,
         flower_rare_nguyet_cuc: 25,
     },
+    /**
+     * Quick-watering (fast-forward growth) is a premium action: it costs
+     * Đá Linh Khí. Small batches cost `quickWaterCost`, a big batch (more
+     * than `quickWaterBigBatch` plots) costs `quickWaterCostBig`. Rain, the
+     * Vạn Thọ elixir and the rewarded ad stay free — only the instant tap pays.
+     */
+    quickWaterCost: 1,
+    quickWaterCostBig: 2,
+    quickWaterBigBatch: 12,
 };
 
 /**
@@ -103,6 +112,7 @@ export const QUESTS = [
 export class EconomySystem {
     constructor(config = ECONOMY_DEFAULTS) {
         this.config = config;
+        this.bus = null;          // optional EventManager — DIAMONDS_CHANGED etc.
         this.spiritStones = 0;
         this.harmony = 0;
         this.inventory = {};      // { seedId: count }
@@ -115,6 +125,96 @@ export class EconomySystem {
             currentBlooms: 0,
             rareBlooms: 0,
         };
+    }
+
+    /**
+     * Attach an EventManager. Every Đá Linh Khí movement is then announced as
+     * `economy:diamonds-changed` so the HUD (and anything else) can re-read
+     * the balance without the scene poking at badges by hand.
+     */
+    bind(bus) {
+        this.bus = bus ?? null;
+        return this;
+    }
+
+    unbind() {
+        this.bus = null;
+        return this;
+    }
+
+    /** Publish a diamond balance change (no-op without a bus). */
+    _emitDiamonds(delta, reason) {
+        if (!this.bus || typeof this.bus.emit !== 'function') return;
+        this.bus.emit('economy:diamonds-changed', {
+            diamonds: this.spiritStones,
+            spiritStones: this.spiritStones,
+            harmony: this.harmony,
+            delta,
+            reason,
+        });
+    }
+
+    /* ---- Đá Linh Khí (diamond) helpers ---- */
+
+    /** Current diamond balance (alias for spiritStones). */
+    getDiamonds() {
+        return this.spiritStones;
+    }
+
+    canAfford(cost) {
+        return this.spiritStones >= Math.max(0, cost | 0);
+    }
+
+    /** Credit diamonds (quest reward, rewarded ad…) and announce it. */
+    addDiamonds(amount, reason = 'grant') {
+        const n = Math.max(0, amount | 0);
+        if (!n) return this.spiritStones;
+        this.spiritStones += n;
+        this.stats.totalStonesEarned += n;
+        this._emitDiamonds(n, reason);
+        return this.spiritStones;
+    }
+
+    /**
+     * Debit diamonds. Refuses (and reports) when the balance is short so the
+     * caller can show a notice instead of silently granting the action.
+     * @returns {{ success: boolean, cost: number, have: number, message: string }}
+     */
+    spendDiamonds(cost, reason = 'spend') {
+        const n = Math.max(0, cost | 0);
+        if (!n) return { success: true, cost: 0, have: this.spiritStones, message: '' };
+        if (this.spiritStones < n) {
+            const result = {
+                success: false,
+                cost: n,
+                have: this.spiritStones,
+                message: `Không đủ Đá Linh Khí! Cần ${n} 💎, hiện có ${this.spiritStones} 💎.`,
+            };
+            this.bus?.emit?.('economy:diamonds-insufficient', { ...result, reason });
+            return result;
+        }
+        this.spiritStones -= n;
+        this._emitDiamonds(-n, reason);
+        return { success: true, cost: n, have: this.spiritStones, message: `-${n} 💎 Đá Linh Khí` };
+    }
+
+    /**
+     * Cost (in diamonds) of an instant quick-water for `plotCount` plots:
+     * 1 💎 for a small batch, 2 💎 for a big one. Never free.
+     */
+    getQuickWaterCost(plotCount = 1) {
+        const small = Math.max(1, this.config.quickWaterCost ?? 1);
+        const big = Math.max(small, this.config.quickWaterCostBig ?? 2);
+        const threshold = this.config.quickWaterBigBatch ?? 12;
+        return plotCount > threshold ? big : small;
+    }
+
+    /**
+     * Pay for a quick-water. Returns the spend result + the cost that applied.
+     */
+    payQuickWater(plotCount = 1) {
+        const cost = this.getQuickWaterCost(plotCount);
+        return { ...this.spendDiamonds(cost, 'quick-water'), cost };
     }
 
     /** Initialize with starting resources */
@@ -172,6 +272,7 @@ export class EconomySystem {
         if (rarity === 'rare' || rarity === 'legendary') {
             this.stats.rareBlooms++;
         }
+        this._emitDiamonds(stones, 'harvest');
 
         return { harmony, spiritStones: stones, harmonyBonus, stoneBonus, harmonyMult };
     }
@@ -200,18 +301,48 @@ export class EconomySystem {
         if (cost === 0) {
             // Free seed — just add to inventory
             this.inventory[seedId] = (this.inventory[seedId] || 0) + 1;
-            return { success: true, cost: 0, message: 'Nhận hạt giống miễn phí!' };
+            this.bus?.emit?.('economy:seed-purchased', { seedId, cost: 0, owned: this.inventory[seedId] });
+            return { success: true, cost: 0, owned: this.inventory[seedId], message: 'Nhận hạt giống miễn phí!' };
         }
         if (this.spiritStones < cost) {
-            return {
+            const result = {
                 success: false,
                 cost,
+                have: this.spiritStones,
+                owned: this.inventory[seedId] || 0,
                 message: `Không đủ Đá Linh Khí! Cần ${cost}, hiện có ${this.spiritStones}.`,
             };
+            this.bus?.emit?.('economy:diamonds-insufficient', { ...result, reason: 'seed-purchase', seedId });
+            return result;
         }
+        // Premium seed: the diamonds are deducted HERE and announced on the bus
+        // so the HUD badge always mirrors the real balance.
         this.spiritStones -= cost;
         this.inventory[seedId] = (this.inventory[seedId] || 0) + 1;
-        return { success: true, cost, message: `Mua thành công! (-${cost} Đá Linh Khí)` };
+        this._emitDiamonds(-cost, 'seed-purchase');
+        this.bus?.emit?.('economy:seed-purchased', { seedId, cost, owned: this.inventory[seedId] });
+        return { success: true, cost, owned: this.inventory[seedId], message: `Mua thành công! (-${cost} Đá Linh Khí)` };
+    }
+
+    /** True when a seed never costs diamonds (starter seeds are unlimited). */
+    isFreeSeed(seedId) {
+        return (this.config.seedCosts[seedId] ?? 0) === 0;
+    }
+
+    /**
+     * Take one seed out of the inventory for planting.
+     * Free seeds are unlimited (count never drops below 0 matters not);
+     * premium seeds must be owned — returns false when the packet is empty
+     * so the scene can offer a purchase instead of planting for free.
+     */
+    consumeSeed(seedId) {
+        if (this.isFreeSeed(seedId)) {
+            if ((this.inventory[seedId] || 0) > 0) this.inventory[seedId]--;
+            return true;
+        }
+        if ((this.inventory[seedId] || 0) <= 0) return false;
+        this.inventory[seedId]--;
+        return true;
     }
 
     /**
@@ -226,6 +357,7 @@ export class EconomySystem {
                 this.completedQuests.add(quest.id);
                 this.spiritStones += quest.reward;
                 this.stats.totalStonesEarned += quest.reward;
+                this._emitDiamonds(quest.reward, `quest:${quest.id}`);
                 newlyCompleted.push({ id: quest.id, name: quest.name, reward: quest.reward });
             }
         }

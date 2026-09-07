@@ -9,6 +9,7 @@
 import { FISHING_ASSET_MANIFEST, FISHING_TEXTURES } from '../data/FishingAssetManifest.js';
 import { LAYERS } from '../core/Layers.js';
 import { DIALOG_FONT } from '../systems/DialogSystem.js';
+import { bindBackdropClose, createPanelShield, guarded, localRectToWorld } from './modalInput.js';
 
 const W = FISHING_ASSET_MANIFEST.stage.width;
 const H = FISHING_ASSET_MANIFEST.stage.height;
@@ -63,8 +64,10 @@ export class FishingModal {
         const s = this.scene;
         this.root = s.add.container(0, 0).setDepth(LAYERS.FISHING).setVisible(false).setAlpha(0);
 
+        // Backdrop: tap OUTSIDE the pier panel closes. Taps inside the panel
+        // are swallowed by the guard + the panel shield below (mobile fix).
         const dim = s.add.rectangle(W / 2, H / 2, W, H, 0x070512, 0.78).setInteractive();
-        dim.on('pointerdown', () => this.close());
+        bindBackdropClose(dim, () => this.getPanelWorldRect(), () => this.close());
 
         const frame = s.add.graphics();
         frame.fillStyle(COLORS.plum, 0.98);
@@ -73,6 +76,10 @@ export class FishingModal {
         frame.strokeRoundedRect(P.x, P.y, P.w, P.h, 34);
         frame.lineStyle(2, COLORS.teal, 0.62);
         frame.strokeRoundedRect(P.x + 18, P.y + 18, P.w - 36, P.h - 36, 26);
+
+        // Panel shield: every pointerdown inside the frame stops propagating
+        // here, so it can never reach the dim and auto-close the modal.
+        const shield = createPanelShield(s, P.x + P.w / 2, P.y + P.h / 2, P.w, P.h);
 
         const title = addText(s, W / 2, P.y + 60, copy.title, {
             fontSize: '48px', color: COLORS.ink, fontStyle: 'bold',
@@ -85,7 +92,7 @@ export class FishingModal {
         const closeButton = addText(s, P.x + P.w - 46, P.y + 49, '✕', {
             fontFamily: 'Arial', fontSize: '40px', color: '#ffcfb0',
         }).setOrigin(0.5).setInteractive({ useHandCursor: true });
-        closeButton.on('pointerdown', () => this.close());
+        closeButton.on('pointerdown', guarded(() => this.close()));
 
         const status = s.add.container(P.x + 158, P.y + 178);
         const statusBg = s.add.graphics();
@@ -140,14 +147,16 @@ export class FishingModal {
             stroke: '#164b4e', strokeThickness: 5,
         }).setOrigin(0.5);
         const castZone = s.add.zone(0, 0, 520, 76).setInteractive({ useHandCursor: true });
-        castZone.on('pointerdown', () => this.playCastPreview());
+        castZone.on('pointerdown', guarded(() => this.playCastPreview()));
         castButton.add([castBg, castText, castZone]);
 
         const hint = addText(s, 540, 1628, copy.hint, {
             fontSize: '18px', color: '#9381b2', fontStyle: 'italic', align: 'center',
         }).setOrigin(0.5);
 
-        this.parts = { dim, frame, title, subtitle, closeButton, status, sceneFrame, pier, vignette, rod, bobber, goldFish, blueFish, waterLabel, lowerRule, gauge, gaugeLabel, gaugeHint, castButton, hint };
+        this.parts = { dim, frame, shield, title, subtitle, closeButton, status, sceneFrame, pier, vignette, rod, bobber, goldFish, blueFish, waterLabel, lowerRule, gauge, gaugeLabel, gaugeHint, castButton, hint };
+        this.dim = dim;
+        this.panelShield = shield;
         this.root.add(Object.values(this.parts));
         this.startMockAnimations();
         return this;
@@ -234,6 +243,12 @@ export class FishingModal {
 
     toggle() { return this.opened ? this.close() : this.open(); }
     isOpen() { return this.opened; }
+
+    /** World rect of the pier panel (backdrop guard + tests). The root is
+     *  stage-origin, so scale is applied around (0,0); P is already world. */
+    getPanelWorldRect() {
+        return localRectToWorld(this.root, P.x, P.y, P.w, P.h);
+    }
 
     destroy() {
         this.stopMockAnimations();

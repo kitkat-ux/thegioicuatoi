@@ -34,6 +34,13 @@ export const EVENTS = {
     QUEST_COMPLETED: 'economy:quest-completed',
     CURRENCY_CHANGED: 'economy:currency-changed',
     REWARD_GRANTED: 'economy:reward-granted',
+    /** Đá Linh Khí (diamonds) balance moved — HUD badges re-read the economy.
+     *  payload: { diamonds, delta, reason } */
+    DIAMONDS_CHANGED: 'economy:diamonds-changed',
+    /** a seed was bought from the drawer: { seedId, cost, owned } */
+    SEED_PURCHASED: 'economy:seed-purchased',
+    /** a diamond spend was refused: { cost, have, reason } */
+    DIAMONDS_INSUFFICIENT: 'economy:diamonds-insufficient',
 
     /* system 8 — Thiên Thời Tứ Thời */
     WEATHER_PHASE_CHANGED: 'weather:phase-changed',

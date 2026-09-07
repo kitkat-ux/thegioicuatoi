@@ -589,6 +589,176 @@ check('Alchemy modal closes cleanly', scene.alchemyModal.isOpen() === false);
 const rareCard = scene.seedCards.find(c => c.seed.id === 'flower_rare_nguyet_cuc');
 check('rare seed card exists in drawer', rareCard !== undefined);
 
+/* ==================== CRITICAL BUGFIX PASS ==================== */
+const { TOOL } = await import('../src/scenes/GardenScene.js');
+const { EVENTS: EV } = await import('../src/systems/EventManager.js');
+const fakeEvent = () => ({ cancelled: false, stopPropagation() { this.cancelled = true; } });
+const pointerAt = (x, y) => ({ x, y, worldX: x, worldY: y });
+const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// -- 1. modal propagation: taps inside the panel never reach the backdrop --
+for (const [label, modal] of [['Alchemy', scene.alchemyModal], ['Fishing', scene.fishingModal], ['Beast', scene.beastModal]]) {
+    modal.open();
+    await settle(320);
+    const rect = modal.getPanelWorldRect();
+    const inside = pointerAt(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    const outside = pointerAt(20, 20);
+    check(`${label} modal: dim is parented to the overlay + panel shield present`,
+        modal.dim?.parentContainer === modal.root && !!modal.panelShield?.input && modal.panelShield.parentContainer === modal.root);
+    const ev1 = fakeEvent();
+    modal.panelShield.emit('pointerdown', inside, 0, 0, ev1);
+    check(`${label} modal: panel shield calls event.stopPropagation()`, ev1.cancelled === true && modal.isOpen());
+    const ev2 = fakeEvent();
+    modal.dim.emit('pointerdown', inside, 0, 0, ev2);
+    check(`${label} modal: a backdrop tap INSIDE the panel rect does not close it`, modal.isOpen() === true && ev2.cancelled === true);
+    modal.dim.emit('pointerdown', outside, 0, 0, fakeEvent());
+    check(`${label} modal: a backdrop tap OUTSIDE the panel closes it`, modal.isOpen() === false);
+    await settle(260);
+}
+
+// -- 4. beast modal: dark theme, tab switch shows one beast at a time --
+{
+    const bm = scene.beastModal;
+    bm.open();
+    await settle(320);
+    check('Beast modal: two tabs rendered (one per beast) at distinct x', bm.tabs.length === 2 && bm.tabs[0].x !== bm.tabs[1].x);
+    const visibleCards = () => bm.stageCards.filter((c) => c.visible).length;
+    check('Beast modal: only the selected beast is on the stage', visibleCards() === 1 && bm.stageCards[0].visible);
+    bm.selectBeast(1);
+    await settle(360);
+    check('Beast modal: tab switch swaps the stage to Ngọc Thỏ (never stacked)',
+        bm.selectedIndex === 1 && bm.stageCards[1].visible && !bm.stageCards[0].visible && bm.beastName.text === 'Ngọc Thỏ');
+    bm.step(1);
+    await settle(360);
+    check('Beast modal: carousel wraps back to Cửu Vĩ Bạch Hồ', bm.selectedIndex === 0 && bm.beastName.text === 'Cửu Vĩ Bạch Hồ' && visibleCards() === 1);
+    check('Beast modal: title/name use light text on the dark panel',
+        bm.title.style.color === '#ffe9a8' && bm.beastName.style.color === '#ffe9a8' && bm.subtitle.style.color === '#b9a3dd');
+    const ev = fakeEvent();
+    bm.tabs[1].list.find((o) => o.type === 'Zone').emit('pointerdown', pointerAt(540, 700), 0, 0, ev);
+    await settle(50);
+    check('Beast modal: tab tap stops propagation and keeps the modal open', ev.cancelled && bm.isOpen() && bm.selectedIndex === 1);
+    bm.close();
+    await settle(260);
+}
+
+// -- 2. sickle vs planting: strict tool separation --
+{
+    scene.clearSelection();
+    const t = scene.tiles[0][5];
+    // bloom a plot the fast way
+    scene.selectedSeed = scene.seedCards[0].seed;
+    scene.activeTool = TOOL.SEED;
+    scene.plantSeed(t);
+    t.gridData.state = 'GROWING';
+    t.gridData.watered = true;
+    scene.bloomTile(t);
+    check('Sickle test: plot is BLOOMING', t.gridData.state === 'BLOOMING');
+    // arm the sickle while a seed is still "selected" from before
+    scene.setTool(TOOL.SICKLE);
+    check('Sickle tool: selecting the sickle drops the seed selection', scene.activeTool === TOOL.SICKLE && scene.selectedSeed === null);
+    scene.selectedSeed = scene.seedCards[0].seed; // adversarial: seed present AND sickle active
+    const plantedBefore = scene.plantedCount;
+    scene.handleTileClick(t);
+    await settle(50);
+    check('Sickle tap on a bloom harvests and clears the plot', t.gridData.state === 'EMPTY' && t.gridData.seedId === null);
+    check('Sickle tap NEVER re-seeds the cleared plot (no fall-through to planting)', t.gridData.state === 'EMPTY' && scene.plantedCount === plantedBefore);
+    scene.handleTileClick(t);
+    await settle(50);
+    check('Sickle tap on an EMPTY plot plants nothing', t.gridData.state === 'EMPTY' && scene.plantedCount === plantedBefore);
+    scene.selectedSeed = null;
+    // seed tool must not harvest
+    const t2 = scene.tiles[5][0];
+    scene.activeTool = TOOL.NONE;
+    scene.selectedSeed = scene.seedCards[0].seed;
+    scene.plantSeed(t2);
+    t2.gridData.state = 'GROWING';
+    t2.gridData.watered = true;
+    scene.bloomTile(t2);
+    scene.selectSeed(scene.seedCards[0].seed);
+    await settle(300);
+    const stonesBeforeSeedTap = scene.economy.spiritStones;
+    scene.handleTileClick(t2);
+    await settle(50);
+    check('Seed tool tap on a bloom does NOT harvest it', t2.gridData.state === 'BLOOMING' && scene.economy.spiritStones === stonesBeforeSeedTap);
+    scene.setTool(TOOL.SICKLE);
+    scene.handleTileClick(t2);
+    await settle(50);
+    check('Switching to the sickle then tapping harvests that same bloom', t2.gridData.state === 'EMPTY');
+    scene.setTool(TOOL.NONE);
+}
+
+// -- 3. diamond economy: seed shop + paid quick-water + HUD sync --
+{
+    const eco = scene.economy;
+    eco.spiritStones = 12;
+    scene.updateHud();
+    const purple = scene.seedCards.find((c) => c.seed.id === 'flower_purple_wisteria');
+    eco.inventory.flower_purple_wisteria = 0;
+    const before = eco.spiritStones;
+    const ok = scene.selectSeed(purple.seed);
+    await settle(300);
+    check('Seed shop: picking an unowned premium seed buys it (-5 💎)', ok === true && eco.spiritStones === before - 5);
+    check('Seed shop: HUD badge shows the deducted balance', scene.stoneValue.text === `💎 ${eco.spiritStones}`);
+    check('Seed shop: DIAMONDS_CHANGED was published for the purchase',
+        scene.bus.wasEmitted(EV.DIAMONDS_CHANGED, (p) => p.reason === 'seed-purchase' && p.delta === -5));
+    check('Seed shop: card shows the owned packet', /Sở hữu: 1/.test(purple.owned.text));
+    // plant it: consumes the packet; the next plant needs another purchase
+    const p1 = scene.tiles[4][0];
+    const p2 = scene.tiles[4][1];
+    scene.handleTileClick(p1);
+    await settle(50);
+    check('Seed shop: planting consumes the premium packet', p1.gridData.state === 'PLANTED' && eco.getInventoryCount('flower_purple_wisteria') === 0);
+    const b2 = eco.spiritStones;
+    scene.handleTileClick(p2);
+    await settle(50);
+    check('Seed shop: planting with an empty packet auto-buys another (-5 💎)', p2.gridData.state === 'PLANTED' && eco.spiritStones === b2 - 5);
+    // broke: refuse + notice, nothing planted
+    eco.spiritStones = 0;
+    scene.updateHud();
+    const p3 = scene.tiles[4][2];
+    scene.handleTileClick(p3);
+    await settle(50);
+    check('Seed shop: with 0 💎 nothing is planted and a notice appears', p3.gridData.state === 'EMPTY' && scene.isNoticeVisible() && /Thiếu Đá Linh Khí|Không đủ/.test(scene.noticeText));
+    scene.hideNotice();
+    await settle(200);
+    const rareSel = scene.selectSeed(rareCard.seed);
+    check('Seed shop: an unaffordable rare seed is not selected', rareSel === false && scene.selectedSeed?.id !== 'flower_rare_nguyet_cuc' && scene.isNoticeVisible());
+    scene.hideNotice();
+    scene.setTool(TOOL.NONE);
+
+    // quick-water: refused at 0 💎 (no growth), then paid at 1 💎
+    check('Quick-water: planted plots are waiting', scene.getWaterablePlots().length >= 2);
+    scene.openModal();
+    await settle(250);
+    check('Quick-water: modal prices the tap in diamonds', /💎/.test(scene.quickWaterBtn.label.text) && /thiếu/.test(scene.quickWaterBtn.label.text));
+    const started = scene.quickWater();
+    await settle(300);
+    check('Quick-water: refused with 0 💎 — dialog shown, plots stay PLANTED',
+        started === false && scene.isNoticeVisible() && p1.gridData.state === 'PLANTED' && p2.gridData.state === 'PLANTED' && scene.watering === false);
+    scene.hideNotice();
+    scene.closeModal(false);
+    await settle(220);
+    eco.spiritStones = 3;
+    scene.updateHud();
+    const diamondSpends = [];
+    const offSpend = scene.bus.on(EV.DIAMONDS_CHANGED, (p) => diamondSpends.push(p));
+    const n = scene.getWaterablePlots().length;
+    const cost = eco.getQuickWaterCost(n);
+    check('Quick-water: cost is 1–2 💎', cost >= 1 && cost <= 2);
+    const started2 = scene.quickWater();
+    await settle(2600);
+    check('Quick-water: paid tap deducts the cost and grows the plots', started2 === true && eco.spiritStones === 3 - cost && p1.gridData.state === 'BLOOMING' && p2.gridData.state === 'BLOOMING');
+    offSpend();
+    check('Quick-water: HUD reflects the spend via DIAMONDS_CHANGED',
+        scene.stoneValue.text === `💎 ${eco.spiritStones}` && diamondSpends.some((p) => p.reason === 'quick-water' && p.delta === -cost));
+    check('Quick-water: rewarded ad still credits diamonds through the economy',
+        scene.bus.listenerCount(EV.DIAMONDS_CHANGED) > 0);
+}
+
+// -- 4b. HUD safe area --
+check('HUD title padded 30px below the top edge (mobile notch safe area)', scene.safeTop === 30 && scene.hudTitle.y === 74 && scene.hudSubtitle.y === 132);
+check('No runtime errors after the bugfix pass', errors.length === 0);
+
 console.log('--- runtime errors ---');
 console.log(errors.length ? errors.join('\n') : '(none)');
 console.log(fails === 0 ? '\nALL RUNTIME TESTS PASSED' : `\n${fails} RUNTIME TEST(S) FAILED`);

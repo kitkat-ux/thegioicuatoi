@@ -204,6 +204,26 @@ fs.writeFileSync('scripts/shots/codex_geom.json', JSON.stringify(scene.codexModa
 scene.closeCodex();
 await new Promise((r) => setTimeout(r, 400));
 
+// Vườn Linh Thú — dark Guofeng panel, tab/carousel (one beast at a time)
+scene.beastModal.open();
+await new Promise((r) => setTimeout(r, 500));
+saveFrame('render_test_beast_fox.png');
+scene.beastModal.selectBeast(1);
+await new Promise((r) => setTimeout(r, 500));
+saveFrame('render_test_beast_rabbit.png');
+scene.beastModal.close();
+await new Promise((r) => setTimeout(r, 400));
+
+// economy notice (not enough Đá Linh Khí) over the paid quick-water modal
+scene.openModal();
+await new Promise((r) => setTimeout(r, 300));
+scene.showNotice({ title: 'Thiếu Đá Linh Khí', message: 'Tưới nhanh 4 ô cần 1 💎 — hiện có 0 💎.\nXem quảng cáo để tưới miễn phí, hoặc thu hoạch hoa để nhận thêm Đá Linh Khí.', tone: 'warn' });
+await new Promise((r) => setTimeout(r, 400));
+saveFrame('render_test_water_notice.png');
+scene.hideNotice();
+scene.closeModal(false);
+await new Promise((r) => setTimeout(r, 400));
+
 // open dialog -> quest list -> scroll to bottom
 scene.onNpcClick();
 await new Promise((r) => setTimeout(r, 400));

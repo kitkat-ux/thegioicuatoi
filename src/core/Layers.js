@@ -30,6 +30,7 @@ export const LAYERS = {
     MODAL: 1500,
     CODEX: 1550,
     FISHING: 1575, // fishing pier modal and its presentation-only mock motion
+    BEAST: 1580, // spirit beast sanctuary modal (Vườn Linh Thú)
     TOAST: 1600,
 };
 

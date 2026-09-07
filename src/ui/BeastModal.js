@@ -9,6 +9,7 @@
  * props so the modal stays decoupled from GardenScene / EconomySystem.
  */
 import Phaser from 'phaser';
+import { LAYERS } from '../core/Layers.js';
 import { DIALOG_FONT } from '../systems/DialogSystem.js';
 import { BEAST_ASSETS } from '../data/BeastAssetManifest.js';
 
@@ -74,7 +75,7 @@ export class BeastModal {
     create() {
         const s = this.scene;
 
-        this.root = s.add.container(540, 960).setDepth(1000).setVisible(false);
+        this.root = s.add.container(540, 960).setDepth(LAYERS.BEAST).setVisible(false);
 
         /* backdrop */
         const shade = s.add.rectangle(0, 0, 1080, 1920, 0x110a22, 0.76).setInteractive();

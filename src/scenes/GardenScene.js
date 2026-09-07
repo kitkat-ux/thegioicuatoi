@@ -15,6 +15,8 @@ import FishingModal from '../ui/FishingModal.js';
 import { FISHING_TEXTURES } from '../data/FishingAssetManifest.js';
 import { AlchemyManager } from '../systems/AlchemyManager.js';
 import { AlchemyModal } from '../ui/AlchemyModal.js';
+import BeastModal from '../ui/BeastModal.js';
+import { BEAST_ASSETS } from '../data/BeastAssetManifest.js';
 
 const W = 1080;
 const H = 1920;
@@ -119,6 +121,7 @@ export default class GardenScene extends Phaser.Scene {
         // Phase-2 systems
         this.alchemy = null;      // System 5: Lò Luyện Đan (furnace + elixir buffs)
         this.alchemyModal = null; // System 5: bronze cauldron UI + HUD medallion
+        this.beastModal = null;   // System 6: Vườn Linh Thú (Spirit Beast Sanctuary)
     }
 
     /* ============================ PRELOAD ============================ */
@@ -151,6 +154,9 @@ export default class GardenScene extends Phaser.Scene {
         // integration manifest, so the modal and preload can never drift.
         const fishingAssets = Object.values(FISHING_TEXTURES);
         for (const asset of fishingAssets) this.load.image(asset.key, asset.path);
+        // Spirit Beast Sanctuary art — same pattern as fishing (manifest-driven)
+        const beastAssets = Object.values(BEAST_ASSETS);
+        for (const asset of beastAssets) this.load.image(asset.key, asset.path);
 
         // Log any 404 failures so missing assets are immediately visible
         // in the browser console instead of silently falling back to canvas.
@@ -159,11 +165,12 @@ export default class GardenScene extends Phaser.Scene {
         });
         this.load.on('complete', () => {
             const fishingKeys = fishingAssets.map((asset) => asset.key);
-            const missing = [...assets, ...fishingKeys].filter((k) => !this.textures.exists(k));
+            const beastKeys = beastAssets.map((asset) => asset.key);
+            const missing = [...assets, ...fishingKeys, ...beastKeys].filter((k) => !this.textures.exists(k));
             if (missing.length) {
                 console.warn(`[GardenScene] Assets missing after preload (fallbacks will be used): ${missing.join(', ')}`);
             } else {
-                console.log(`[GardenScene] All ${assets.length + fishingKeys.length} image assets loaded OK (no fallbacks triggered)`);
+                console.log(`[GardenScene] All ${assets.length + fishingKeys.length + beastKeys.length} image assets loaded OK (no fallbacks triggered)`);
             }
         });
     }
@@ -222,6 +229,8 @@ export default class GardenScene extends Phaser.Scene {
         this.fishingModal = new FishingModal(this, { audio: this.audio }).create();
         this.createFishingEntryPoint();
         this.alchemyModal = new AlchemyModal(this, { alchemy: this.alchemy, bus: this.bus, audio: this.audio }).create();
+        this.beastModal = new BeastModal(this, { audio: this.audio }).create();
+        this.createBeastEntryPoint();
 
         this.createMist();
         this.createParticleEmitters();
@@ -260,6 +269,7 @@ export default class GardenScene extends Phaser.Scene {
 
     /** Tear every system down with the scene (bus listeners included). */
     shutdown() {
+        this.beastModal?.destroy();
         this.fishingModal?.destroy();
         this.alchemyModal?.destroy();
         this.codexModal?.destroy();
@@ -904,9 +914,9 @@ export default class GardenScene extends Phaser.Scene {
         }
     }
 
-    /** True when a full-screen overlay (drawer / dialog / codex / alchemy / ad) is up. */
+    /** True when a full-screen overlay (drawer / dialog / codex / alchemy / fishing / beast / ad) is up. */
     uiBlocked() {
-        return !!(this.drawerOpen || this.dialogVisible || this.adWatching || this.codexModal?.isOpen() || this.fishingModal?.isOpen());
+        return !!(this.drawerOpen || this.dialogVisible || this.adWatching || this.codexModal?.isOpen() || this.fishingModal?.isOpen() || this.alchemyModal?.isOpen() || this.beastModal?.isOpen());
     }
 
     /** Open the presentation-only fishing pier UI. */
@@ -917,7 +927,52 @@ export default class GardenScene extends Phaser.Scene {
     closeFishing() {
         this.fishingModal?.close();
         return !!(this.drawerOpen || this.dialogVisible || this.adWatching
-            || this.codexModal?.isOpen() || this.alchemyModal?.isOpen());
+            || this.codexModal?.isOpen() || this.alchemyModal?.isOpen() || this.beastModal?.isOpen());
+    }
+
+    /** Open the Vườn Linh Thú sanctuary UI. */
+    openBeasts() {
+        this.beastModal?.open();
+    }
+
+    closeBeasts() {
+        this.beastModal?.close();
+        return !!(this.drawerOpen || this.dialogVisible || this.adWatching
+            || this.codexModal?.isOpen() || this.fishingModal?.isOpen() || this.alchemyModal?.isOpen());
+    }
+
+    /** HUD entry point for the Spirit Beast Sanctuary (Vườn Linh Thú). */
+    createBeastEntryPoint() {
+        const button = this.add.container(700, 392).setDepth(D.HUD);
+        const bg = this.add.graphics();
+        bg.fillStyle(0x1a0f2e, 0.9).lineStyle(2, 0x4fd1a5, 0.8);
+        bg.fillRoundedRect(-112, -34, 224, 68, 16).strokeRoundedRect(-112, -34, 224, 68, 16);
+        const beastIconKey = BEAST_ASSETS.spirit_fox?.key ?? 'beast_spirit_fox';
+        let icon;
+        if (this.textures.exists(beastIconKey)) {
+            icon = this.add.image(-76, 0, beastIconKey).setDisplaySize(58, 58);
+        } else {
+            // fallback: jade-tinted glow when beast texture is missing (e.g. headless tests)
+            icon = this.add.image(-76, 0, 'glow').setTint(0x4fd1a5).setAlpha(0.85).setScale(0.42);
+        }
+        const label = this.add.text(-42, -2, 'Linh Thú', {
+            fontFamily: DIALOG_FONT, fontSize: '23px', color: '#d7fff0', fontStyle: 'bold',
+            stroke: '#123d4d', strokeThickness: 4,
+        }).setOrigin(0, 0.5);
+        const sub = this.add.text(-42, 21, 'Vườn', {
+            fontFamily: DIALOG_FONT, fontSize: '16px', color: '#83d9c5',
+            stroke: '#123d4d', strokeThickness: 3,
+        }).setOrigin(0, 0.5);
+        const zone = this.add.zone(0, 0, 224, 68).setInteractive({ useHandCursor: true });
+        zone.on('pointerdown', () => {
+            this.audio?.ensure?.();
+            this.beastModal?.open();
+        });
+        zone.on('pointerover', () => bg.lineStyle(3, 0xbaf5d8, 1).strokeRoundedRect(-112, -34, 224, 68, 16));
+        zone.on('pointerout', () => bg.lineStyle(2, 0x4fd1a5, 0.8).strokeRoundedRect(-112, -34, 224, 68, 16));
+        button.add([bg, icon, label, sub, zone]);
+        this.beastButton = button;
+        this.tweens.add({ targets: button, y: { from: 392, to: 388 }, duration: 2200, yoyo: true, repeat: -1, ease: 'Sine.easeInOut', delay: 200 });
     }
 
     /** Open the Vạn Hoa Đồ Giám scroll (also callable from tests / NPC dialog). */

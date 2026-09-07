@@ -54,6 +54,16 @@ export const EVENTS = {
     /* system 4 — Linh Hoa Dị Biến */
     BREEDING_SUCCESS: 'BREEDING_SUCCESS',
 
+    /* system 5 — Lò Luyện Đan (Alchemy Cauldron) */
+    ALCHEMY_INGREDIENT_GAINED: 'alchemy:ingredient-gained',
+    ALCHEMY_CRAFT_STARTED: 'alchemy:craft-started',
+    ALCHEMY_CRAFT_SUCCESS: 'alchemy:craft-success',
+    ALCHEMY_CRAFT_FAILED: 'alchemy:craft-failed',
+    /** a timed elixir buff ran out (furnace UI + garden react via the bus) */
+    ALCHEMY_BUFF_EXPIRED: 'alchemy:buff-expired',
+    /** stable public name (per spec): an elixir was consumed, its buff is now active */
+    ELIXIR_CONSUMED: 'ELIXIR_CONSUMED',
+
     /* UI */
     CODEX_OPEN_REQUEST: 'ui:codex-open-request',
     CODEX_OPENED: 'ui:codex-opened',

@@ -36,12 +36,15 @@ src/
   vfx/TextureFactory.js        # procedural island/VFX textures + load fallbacks
   vfx/WeatherView.js           # System 8 renderer: ambient wash, moon, rain, ripples
   ui/CodexModal.js             # System 9 UI: HUD medallion + scrollable rice-paper codex
+  ui/AlchemyModal.js           # System 5 UI: HUD bronze medallion + cauldron overlay
   audio/AudioManager.js        # WebAudio pentatonic guzheng/flute/chimes + rain bed
   systems/EventManager.js      # the game bus (on/once/off/offOwner/wildcard/history) + EVENTS
   systems/EconomySystem.js     # spirit stones, inventory, quests (unit-tested)
   systems/DialogSystem.js      # NPC dialogue tree + quest rows (unit-tested)
   systems/CodexManager.js      # System 9 state: discoveries, mastery, rewards, buffs (unit-tested)
   systems/WeatherSystem.js     # System 8 state: phases, seasons, rain, full moon (unit-tested)
+  systems/AlchemyManager.js    # System 5 state: furnace, elixir shelf, buff timers (unit-tested)
+  systems/BreedingManager.js   # System 4 rules: cross-breeding, mutation (unit-tested)
   scenes/GardenScene.js        # grid, island, NPC, dialog, drawer, watering, bus wiring
 scripts/
   process-assets.mjs           # green/black chroma-key + trim + verify pipeline
@@ -97,6 +100,19 @@ scripts/
   (+Harmony, +Spirit Stones, growth speed, night glow, `harmonyMult`).
   It only ever learns from gameplay facts published on the bus
   (`FLOWER_BLOOMED` / `FLOWER_HARVESTED`) — it never reads the scene.
+- **System 5 · Lò Luyện Đan (`AlchemyManager` + `AlchemyModal`)** — the bronze
+  cauldron behind the HUD medallion (958, 462) transmutes harvested petal-herbs
+  (U Đàm, Huyết Kế, …) and Linh Dịch into elixirs: **Tụ Khí Đan** (3× U Đàm +
+  1 Linh Dịch) +20% bloom speed for 10 min, **Tẩy Tủy Đan** (2× Huyết Kế +
+  2× U Đàm) +15% breeding mutation chance, **Vạn Thọ Linh Dịch** (2× Linh Dịch
+  + 1 Trúc Bích) auto-waters the whole garden. Ingredients arrive as
+  `FLOWER_HARVESTED` / `TILE_WATERED` bus facts; a single furnace runs a
+  real-time countdown with a per-recipe success roll; consumed elixirs publish
+  `ELIXIR_CONSUMED` and the scene applies them (growth mult composes with the
+  codex buff in `bloomStaggerMs()`, mutation feeds `BreedingManager` via a
+  `mutationBonusProvider`, Vạn Thọ triggers `waterAll`). No new image assets —
+  the cauldron, flame and medallion are procedural Graphics over the shared
+  `glow`/`spark` textures.
 - **Event bus** — `EventManager` (`gameBus`) is the single channel between
   systems and views (`on/once/off/offOwner/wildcard/suspend/history/clear`).
   Systems never import each other; the scene composes their modifiers and

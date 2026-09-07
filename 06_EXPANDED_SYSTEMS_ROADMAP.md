@@ -61,7 +61,7 @@
 
 - Phẩm cấp hoa: Phổ Thông -> Quý Hiếm -> Sử Thi -> Thần Thoại (phát sáng lấp lánh ban đêm, thu hoạch được lượng lớn Linh Thạch).
 
-## 5. Lò Luyện Đan & Tiên Trà (Alchemy & Crafting)
+## 5. Lò Luyện Đan & Tiên Trà (Alchemy & Crafting) ✅ ĐÃ TRIỂN KHAI
 
 - Vị trí: Đình viện lầu son phía sau.
 
@@ -70,6 +70,23 @@
   + Tiên Trà Tụ Linh: Dùng 5 đóa Lan Xanh + nước suối -> Tăng 50% tốc độ lớn cho toàn vườn trong 10 phút.
 
   + Tụ Khí Đan: Dùng 10 Dược Thảo -> Bán cho thương nhân đổi kho báu.
+
+**Triển khai (Phase 2):** `src/systems/AlchemyManager.js` (state + rules, thuần
+logic, không Phaser) + `src/ui/AlchemyModal.js` (huy hiệu đồng trên HUD tại
+(958,462) + overlay đan lô với lửa động). Nguyên liệu đến từ **sự kiện trên bus**:
+mỗi `FLOWER_HARVESTED` rơi 1 cánh thảo dược theo loài (U Đàm ← Tinh Trạch U Đàm,
+Huyết Kế ← Hồng Hà Tiên Chi, …), hoa được mưa xuân tưới cho +1 Linh Dịch, và mỗi
+4 ô `TILE_WATERED` ngưng tụ 1 Linh Dịch. Ba công thức theo bảng Phase-2:
+**Tụ Khí Đan** (3× U Đàm + 1 Linh Dịch, 45s, 85% → +20% tốc độ hoa nở trong 10
+phút), **Tẩy Tủy Đan** (2× Huyết Kế + 2× U Đàm, 60s, 70% → +15% tỷ lệ đột biến
+lai tạo), **Vạn Thọ Linh Dịch** (2× Linh Dịch + 1 Trúc Bích, 30s, 95% → tự động
+tưới toàn vườn). Lò một lúc một lần nấu, đồng hồ thời gian thực, tỉ lệ thành
+công theo `random()` có thể inject cho test. Đan đã luyện nằm trên kệ đan; khi
+dùng, manager phát `ELIXIR_CONSUMED` (tên công khai cố định theo spec) —
+`GardenScene` chỉ nghe bus: buff tăng tốc gộp vào `bloomStaggerMs()` cùng buff
+Đồ Giám, buff đột biến vào `BreedingManager` qua `mutationBonusProvider`, và
+Vạn Thọ gọi `waterAll()` y hệt buff mưa. Trạng thái lưu/nạp bằng
+`serialize()/deserialize()`.
 
 ## 6. Tiên Khách Cầu Kiều (Visitor Order System)
 

@@ -54,18 +54,24 @@ const pairMatches = (recipe, a, b) => {
 
 export class BreedingManager {
     constructor({ bus = null, random = Math.random, baseMutationChance = BREEDING_DEFAULTS.baseMutationChance,
-        spiritualSoilBonus = BREEDING_DEFAULTS.spiritualSoilBonus, recipes = BREEDING_RECIPES } = {}) {
+        spiritualSoilBonus = BREEDING_DEFAULTS.spiritualSoilBonus, recipes = BREEDING_RECIPES,
+        mutationBonusProvider = null } = {}) {
         this.bus = bus;
         this.random = random;
         this.baseMutationChance = baseMutationChance;
         this.spiritualSoilBonus = spiritualSoilBonus;
         this.recipes = recipes;
         this.discoveredSeeds = new Set();
+        // Optional live bonus (System 5 — Tẩy Tủy Đan): a zero-arg function the
+        // wiring point feeds with alchemy.getBuffs().mutationBonus. Keeping it a
+        // provider means this module never imports the AlchemyManager.
+        this.mutationBonusProvider = typeof mutationBonusProvider === 'function' ? mutationBonusProvider : null;
     }
 
     calculateMutationChance({ spiritualSoil = false, soil = null } = {}) {
         const enriched = spiritualSoil === true || soil === 'spiritual' || soil?.spiritual === true || soil?.isSpiritual === true;
-        return Math.min(1, Math.max(0, this.baseMutationChance + (enriched ? this.spiritualSoilBonus : 0)));
+        const alchemyBonus = this.mutationBonusProvider ? Math.max(0, this.mutationBonusProvider() || 0) : 0;
+        return Math.min(1, Math.max(0, this.baseMutationChance + alchemyBonus + (enriched ? this.spiritualSoilBonus : 0)));
     }
 
     findRecipe(parentA, parentB) {

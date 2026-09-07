@@ -400,9 +400,30 @@ export function ensureFallbackTextures(scene) {
                 flower_purple: ['#B26BFF', '#5a2b8a', '#f0d4ff'],
                 flower_golden: ['#FFD700', '#a06a00', '#fff3b0'],
                 flower_emerald: ['#2E8B57', '#0f5031', '#a8ffcf'],
+                flower_rare: ['#E8B4FF', '#6a2b8a', '#ffffff'],
             };
-            drawFallbackFlower(scene, seed.sprite_key, ...palettes[seed.sprite_key]);
+            if (palettes[seed.sprite_key]) {
+                drawFallbackFlower(scene, seed.sprite_key, ...palettes[seed.sprite_key]);
+            } else if (seed.sprite_key === 'flower_rare') {
+                drawRareFlowerFallback(scene);
+            }
         }
+    }
+    // New asset fallbacks
+    if (!scene.textures.exists('flower_rare')) {
+        drawRareFlowerFallback(scene);
+    }
+    if (!scene.textures.exists('npc_tien_nu')) {
+        drawNpcTienNuFallback(scene);
+    }
+    if (!scene.textures.exists('icon_sickle')) {
+        drawSickleIconFallback(scene);
+    }
+    if (!scene.textures.exists('icon_spirit_stone')) {
+        drawSpiritStoneIconFallback(scene);
+    }
+    if (!scene.textures.exists('bridge_pavilion')) {
+        drawBridgePavilionFallback(scene);
     }
     for (const icon of ['icon_seed_drawer', 'icon_water_bucket', 'icon_search']) {
         if (!scene.textures.exists(icon)) {
@@ -410,4 +431,306 @@ export function ensureFallbackTextures(scene) {
         }
     }
     drawFallbackIcons(scene); // no-op for existing keys
+}
+
+/* ------------------------------------------------------------------ */
+/* 5 new AI asset procedural fallbacks                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Rare flower: Nguyệt Cúc Thiên Hà — a galaxy-themed chrysanthemum with
+ * swirling purple/silver petals and a luminous star center.
+ */
+function drawRareFlowerFallback(scene) {
+    canvasTex(scene, 'flower_rare', 256, 256, (ctx, w, h) => {
+        const cx = w / 2, cy = h / 2 + 8;
+        // outer glow halo
+        const halo = ctx.createRadialGradient(cx, cy, 10, cx, cy, 120);
+        halo.addColorStop(0, 'rgba(232,180,255,0.4)');
+        halo.addColorStop(0.5, 'rgba(180,120,255,0.15)');
+        halo.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = halo;
+        ctx.fillRect(0, 0, w, h);
+        // swirling petals (16 long chrysanthemum petals)
+        const petals = 16;
+        for (let i = 0; i < petals; i++) {
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.rotate((i / petals) * Math.PI * 2);
+            const pg = ctx.createLinearGradient(0, 0, 0, -70);
+            pg.addColorStop(0, '#6a2b8a');
+            pg.addColorStop(0.5, '#c98bff');
+            pg.addColorStop(1, '#ffffff');
+            ctx.fillStyle = pg;
+            ctx.beginPath();
+            ctx.ellipse(0, -42, 10, 38, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+        // inner ring of shorter petals
+        for (let i = 0; i < 8; i++) {
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.rotate((i / 8) * Math.PI * 2 + 0.2);
+            const pg2 = ctx.createLinearGradient(0, 0, 0, -40);
+            pg2.addColorStop(0, '#e8b4ff');
+            pg2.addColorStop(1, '#ffffff');
+            ctx.fillStyle = pg2;
+            ctx.beginPath();
+            ctx.ellipse(0, -26, 8, 22, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+        // star center
+        const cg = ctx.createRadialGradient(cx, cy, 2, cx, cy, 26);
+        cg.addColorStop(0, '#ffffff');
+        cg.addColorStop(0.4, '#e8b4ff');
+        cg.addColorStop(1, '#9b4dca');
+        ctx.fillStyle = cg;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 24, 0, Math.PI * 2);
+        ctx.fill();
+        // sparkle dots
+        ctx.fillStyle = '#ffffff';
+        for (let i = 0; i < 8; i++) {
+            const angle = (i / 8) * Math.PI * 2;
+            const r = 14;
+            ctx.beginPath();
+            ctx.arc(cx + Math.cos(angle) * r, cy + Math.sin(angle) * r, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    });
+}
+
+/**
+ * NPC: Tiên Nữ Hoa Giang — an ethereal fairy maiden with flowing robes,
+ * rendered as a silhouette-style sprite for the bridge/pavilion area.
+ */
+function drawNpcTienNuFallback(scene) {
+    canvasTex(scene, 'npc_tien_nu', 256, 384, (ctx, w, h) => {
+        const cx = w / 2;
+        // ethereal glow
+        const glow = ctx.createRadialGradient(cx, h * 0.4, 10, cx, h * 0.4, 160);
+        glow.addColorStop(0, 'rgba(200,230,255,0.5)');
+        glow.addColorStop(0.5, 'rgba(180,200,255,0.2)');
+        glow.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = glow;
+        ctx.fillRect(0, 0, w, h);
+        // flowing robe body (triangular silhouette)
+        const robeGrad = ctx.createLinearGradient(cx, h * 0.2, cx, h * 0.9);
+        robeGrad.addColorStop(0, '#c9dff8');
+        robeGrad.addColorStop(0.4, '#8bb8e8');
+        robeGrad.addColorStop(1, '#4a6fa0');
+        ctx.fillStyle = robeGrad;
+        ctx.beginPath();
+        ctx.moveTo(cx, h * 0.2);
+        ctx.bezierCurveTo(cx - 30, h * 0.3, cx - 50, h * 0.6, cx - 60, h * 0.88);
+        ctx.quadraticCurveTo(cx, h * 0.92, cx + 60, h * 0.88);
+        ctx.bezierCurveTo(cx + 50, h * 0.6, cx + 30, h * 0.3, cx, h * 0.2);
+        ctx.fill();
+        // head
+        const headGrad = ctx.createRadialGradient(cx, h * 0.15, 4, cx, h * 0.15, 28);
+        headGrad.addColorStop(0, '#f0e8d8');
+        headGrad.addColorStop(1, '#c8b8a0');
+        ctx.fillStyle = headGrad;
+        ctx.beginPath();
+        ctx.arc(cx, h * 0.15, 24, 0, Math.PI * 2);
+        ctx.fill();
+        // flowing hair
+        ctx.fillStyle = '#2a1a3e';
+        ctx.beginPath();
+        ctx.moveTo(cx - 20, h * 0.1);
+        ctx.quadraticCurveTo(cx - 35, h * 0.2, cx - 40, h * 0.45);
+        ctx.quadraticCurveTo(cx - 20, h * 0.3, cx, h * 0.1);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(cx + 20, h * 0.1);
+        ctx.quadraticCurveTo(cx + 35, h * 0.2, cx + 40, h * 0.45);
+        ctx.quadraticCurveTo(cx + 20, h * 0.3, cx, h * 0.1);
+        ctx.fill();
+        // flowing sleeves
+        ctx.fillStyle = 'rgba(200,220,255,0.7)';
+        ctx.beginPath();
+        ctx.moveTo(cx - 20, h * 0.32);
+        ctx.bezierCurveTo(cx - 60, h * 0.38, cx - 80, h * 0.5, cx - 50, h * 0.55);
+        ctx.bezierCurveTo(cx - 40, h * 0.45, cx - 25, h * 0.38, cx - 20, h * 0.32);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(cx + 20, h * 0.32);
+        ctx.bezierCurveTo(cx + 60, h * 0.38, cx + 80, h * 0.5, cx + 50, h * 0.55);
+        ctx.bezierCurveTo(cx + 40, h * 0.45, cx + 25, h * 0.38, cx + 20, h * 0.32);
+        ctx.fill();
+        // golden sash
+        ctx.strokeStyle = '#d8a24e';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(cx - 25, h * 0.35);
+        ctx.quadraticCurveTo(cx, h * 0.38, cx + 25, h * 0.35);
+        ctx.stroke();
+        // flower ornament in hair
+        ctx.fillStyle = '#e8b4ff';
+        ctx.beginPath();
+        ctx.arc(cx + 16, h * 0.09, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(cx + 16, h * 0.09, 3, 0, Math.PI * 2);
+        ctx.fill();
+    });
+}
+
+/**
+ * Sickle icon (Cổ Phong Sickle) — used for the "Harvest All" button.
+ * An ancient curved blade with a golden handle.
+ */
+function drawSickleIconFallback(scene) {
+    canvasTex(scene, 'icon_sickle', 192, 192, (ctx, w, h) => {
+        const cx = w / 2, cy = h / 2;
+        // handle
+        ctx.strokeStyle = '#8a5a26';
+        ctx.lineWidth = 14;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(cx + 10, cy + 50);
+        ctx.lineTo(cx - 20, cy - 30);
+        ctx.stroke();
+        // handle wrap
+        ctx.strokeStyle = '#d8a24e';
+        ctx.lineWidth = 5;
+        for (let i = 0; i < 4; i++) {
+            const y = cy + 40 - i * 18;
+            ctx.beginPath();
+            ctx.moveTo(cx + 6, y);
+            ctx.lineTo(cx - 4 - i * 2, y - 12);
+            ctx.stroke();
+        }
+        // blade
+        const bladeGrad = ctx.createLinearGradient(cx - 50, cy - 50, cx + 30, cy - 10);
+        bladeGrad.addColorStop(0, '#c0c8d4');
+        bladeGrad.addColorStop(0.5, '#e8edf4');
+        bladeGrad.addColorStop(1, '#8090a0');
+        ctx.fillStyle = bladeGrad;
+        ctx.beginPath();
+        ctx.moveTo(cx - 20, cy - 30);
+        ctx.quadraticCurveTo(cx - 60, cy - 70, cx - 40, cy - 80);
+        ctx.quadraticCurveTo(cx - 10, cy - 85, cx + 20, cy - 60);
+        ctx.quadraticCurveTo(cx + 10, cy - 40, cx - 10, cy - 28);
+        ctx.closePath();
+        ctx.fill();
+        // blade edge highlight
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(cx - 18, cy - 32);
+        ctx.quadraticCurveTo(cx - 55, cy - 68, cx - 38, cy - 78);
+        ctx.stroke();
+        // magical glow at tip
+        const tipGlow = ctx.createRadialGradient(cx - 40, cy - 78, 2, cx - 40, cy - 78, 18);
+        tipGlow.addColorStop(0, 'rgba(127,247,255,0.8)');
+        tipGlow.addColorStop(1, 'rgba(127,247,255,0)');
+        ctx.fillStyle = tipGlow;
+        ctx.fillRect(cx - 58, cy - 96, 36, 36);
+    });
+}
+
+/**
+ * Spirit Stone icon — a glowing crystalline gem used as currency.
+ */
+function drawSpiritStoneIconFallback(scene) {
+    canvasTex(scene, 'icon_spirit_stone', 128, 128, (ctx, w, h) => {
+        const cx = w / 2, cy = h / 2;
+        // outer glow
+        const glow = ctx.createRadialGradient(cx, cy, 8, cx, cy, 56);
+        glow.addColorStop(0, 'rgba(200,160,255,0.6)');
+        glow.addColorStop(0.5, 'rgba(140,100,255,0.2)');
+        glow.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = glow;
+        ctx.fillRect(0, 0, w, h);
+        // crystal body (hexagonal)
+        const crystalGrad = ctx.createLinearGradient(cx - 30, cy - 36, cx + 30, cy + 36);
+        crystalGrad.addColorStop(0, '#e8d4ff');
+        crystalGrad.addColorStop(0.3, '#b26bff');
+        crystalGrad.addColorStop(0.7, '#7a3ec0');
+        crystalGrad.addColorStop(1, '#4a1e80');
+        ctx.fillStyle = crystalGrad;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - 36);
+        ctx.lineTo(cx + 26, cy - 16);
+        ctx.lineTo(cx + 26, cy + 16);
+        ctx.lineTo(cx, cy + 36);
+        ctx.lineTo(cx - 26, cy + 16);
+        ctx.lineTo(cx - 26, cy - 16);
+        ctx.closePath();
+        ctx.fill();
+        // crystal outline
+        ctx.strokeStyle = '#d8a24e';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        // inner facet highlight
+        ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - 34);
+        ctx.lineTo(cx + 20, cy - 14);
+        ctx.lineTo(cx + 4, cy + 6);
+        ctx.lineTo(cx - 14, cy - 10);
+        ctx.closePath();
+        ctx.fill();
+        // sparkle
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(cx - 8, cy - 14, 4, 0, Math.PI * 2);
+        ctx.fill();
+    });
+}
+
+/**
+ * Bridge/Pavilion decoration — a small arched bridge with a traditional
+ * Vietnamese/Chinese pavilion roof, placed at the edge of the garden.
+ */
+function drawBridgePavilionFallback(scene) {
+    canvasTex(scene, 'bridge_pavilion', 320, 240, (ctx, w, h) => {
+        // arch bridge
+        ctx.fillStyle = '#3a2810';
+        ctx.beginPath();
+        ctx.moveTo(20, h * 0.75);
+        ctx.quadraticCurveTo(w / 2, h * 0.4, w - 20, h * 0.75);
+        ctx.lineTo(w - 20, h * 0.85);
+        ctx.quadraticCurveTo(w / 2, h * 0.5, 20, h * 0.85);
+        ctx.closePath();
+        ctx.fill();
+        // bridge rails
+        ctx.strokeStyle = '#d8a24e';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(30, h * 0.7);
+        ctx.quadraticCurveTo(w / 2, h * 0.35, w - 30, h * 0.7);
+        ctx.stroke();
+        // rail posts
+        for (let i = 0; i < 5; i++) {
+            const t = (i + 0.5) / 5;
+            const x = 30 + t * (w - 60);
+            const topY = h * 0.7 - Math.sin(t * Math.PI) * (h * 0.35);
+            ctx.fillStyle = '#d8a24e';
+            ctx.fillRect(x - 3, topY, 6, h * 0.12);
+        }
+        // pavilion roof
+        ctx.fillStyle = '#4a1e20';
+        ctx.beginPath();
+        ctx.moveTo(w / 2, h * 0.08);
+        ctx.lineTo(w * 0.18, h * 0.32);
+        ctx.quadraticCurveTo(w / 2, h * 0.28, w * 0.82, h * 0.32);
+        ctx.closePath();
+        ctx.fill();
+        // roof edge
+        ctx.strokeStyle = '#d8a24e';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(w * 0.15, h * 0.33);
+        ctx.quadraticCurveTo(w / 2, h * 0.28, w * 0.85, h * 0.33);
+        ctx.stroke();
+        // pillars
+        ctx.fillStyle = '#5a2020';
+        ctx.fillRect(w * 0.3, h * 0.32, 8, h * 0.3);
+        ctx.fillRect(w * 0.65, h * 0.32, 8, h * 0.3);
+    });
 }

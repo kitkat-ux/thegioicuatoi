@@ -3,6 +3,8 @@ import { IsoMath } from '../core/IsoMath.js';
 import { SEED_CATALOG, SEED_BY_ID, normalizeText } from '../data/seedCatalog.js';
 import { buildExtraTextures, ensureFallbackTextures } from '../vfx/TextureFactory.js';
 import AudioManager from '../audio/AudioManager.js';
+import { EconomySystem, SEED_RARITY } from '../systems/EconomySystem.js';
+import { DialogSystem } from '../systems/DialogSystem.js';
 
 const W = 1080;
 const H = 1920;
@@ -25,12 +27,19 @@ const C = {
 };
 
 /* Depth plan: bg -100, platform -60, tiles ~910..1078, petals 1080+,
-   hint 4/5, chip 90, action bar 120, drawer 1200, modal 1500. */
-const D = { TILES: 910, PETALS: 1080, CHIP: 90, BAR: 120, DRAWER: 1200, MODAL: 1500 };
+   hint 4/5, chip 90, action bar 120, drawer 1200, modal 1500, npc 200, dialog 1400. */
+const D = { TILES: 910, PETALS: 1080, CHIP: 90, BAR: 120, DRAWER: 1200, MODAL: 1500, NPC: 200, DIALOG: 1400 };
 
 /* pentatonic walk for bloom chimes (C major pentatonic, 2 octaves) */
 const SEED_CHIME_BASE = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5, 1174.66, 1318.51, 1567.98, 1760.0];
 const PENTATONIC_WATER_BASE = 1046.5;
+
+/* Touch zone radius for action buttons (172px = 108px button + 64px padding) */
+const TOUCH_ZONE_RADIUS = 172;
+
+/* Gesture thresholds */
+const SWIPE_THRESHOLD = 60;      // min px to register a swipe
+const DRAG_PLANT_MIN_DIST = 30;  // min px from tile center to trigger plant
 
 export default class GardenScene extends Phaser.Scene {
     constructor() {
@@ -45,6 +54,17 @@ export default class GardenScene extends Phaser.Scene {
         this.drawerOpen = false;
         this.watering = false;
         this.fullMosaicShown = false;
+        // New state
+        this.spiritStones = 0;
+        this.economy = null;
+        this.dialog = null;
+        this.npcActive = false;
+        this.dialogVisible = false;
+        // Gesture state
+        this.gestureActive = false;
+        this.gestureStartX = 0;
+        this.gestureStartY = 0;
+        this.lastDragTile = null;
     }
 
     /* ============================ PRELOAD ============================ */
@@ -56,9 +76,14 @@ export default class GardenScene extends Phaser.Scene {
             'flower_golden',
             'flower_cyan',
             'flower_emerald',
+            'flower_rare',
             'icon_seed_drawer',
             'icon_water_bucket',
             'icon_search',
+            'icon_sickle',
+            'icon_spirit_stone',
+            'npc_tien_nu',
+            'bridge_pavilion',
         ];
         for (const a of assets) {
             this.load.image(a, `assets/images/${a}.png`);
@@ -72,6 +97,11 @@ export default class GardenScene extends Phaser.Scene {
         buildExtraTextures(this);
         ensureFallbackTextures(this);
 
+        // Initialize economy and dialog systems
+        this.economy = new EconomySystem();
+        this.economy.init();
+        this.dialog = new DialogSystem();
+
         // Background covers 1080x1920
         this.add.image(W / 2, H / 2, 'bg_manor_isometric').setDisplaySize(W, H).setDepth(-100);
 
@@ -82,28 +112,214 @@ export default class GardenScene extends Phaser.Scene {
         });
 
         this.createPlatform();
+        this.createBridgeAndNpc();
         this.createGrid();
         this.createHud();
         this.createActionBar();
         this.createDrawer();
         this.createModal();
+        this.createDialogBox();
         this.createMist();
         this.createParticleEmitters();
         this.createBloomRadiance();
+        this.setupGestures();
 
         this.updateHint();
+        this.updateHud();
     }
 
     /* ====================== PLATFORM (grounding the grid) ====================== */
     createPlatform() {
-        // Grid diamond: top vertex (540,950), bottom vertex (540,1270).
-        // The platform texture (936x540) at scale 0.82 wraps it with margin.
         this.platform = this.add.image(540, 1110, 'platform')
             .setDepth(-60)
             .setScale(0.82)
             .setAlpha(0.96);
-        // gentle ambient glow on the stone
         this.add.image(540, 1112, 'glow').setTint(0x2c8ea8).setAlpha(0.12).setScale(4.0, 2.2).setDepth(-59);
+    }
+
+    /* ====================== BRIDGE + NPC ====================== */
+    createBridgeAndNpc() {
+        // Bridge/pavilion decoration above the grid
+        this.bridgeSprite = this.add.image(180, 780, 'bridge_pavilion')
+            .setDisplaySize(280, 210)
+            .setDepth(D.NPC - 10)
+            .setAlpha(0.9);
+
+        // NPC: Tiên Nữ Hoa Giang
+        this.npcGroup = this.add.container(160, 720).setDepth(D.NPC);
+        const npcSprite = this.add.image(0, 0, 'npc_tien_nu')
+            .setDisplaySize(140, 210);
+        // NPC glow aura
+        const npcGlow = this.add.image(0, 20, 'glow')
+            .setTint(0xc9dff8).setAlpha(0.25).setScale(1.8, 2.2);
+        // Name tag
+        const npcName = this.add.text(0, 115, 'Tiên Nữ Hoa Giang', {
+            fontFamily: 'Georgia, serif', fontSize: '20px', color: '#c9dff8',
+            align: 'center', stroke: '#1b1140', strokeThickness: 4,
+        }).setOrigin(0.5);
+        // Interaction zone
+        const npcZone = this.add.zone(0, 20, 160, 240).setInteractive();
+        npcZone.on('pointerdown', () => this.onNpcClick());
+
+        this.npcGroup.add([npcGlow, npcSprite, npcName, npcZone]);
+
+        // Breathing / float idle animation
+        this.tweens.add({
+            targets: this.npcGroup,
+            y: { from: 714, to: 726 },
+            duration: 2800,
+            yoyo: true,
+            repeat: -1,
+            ease: 'Sine.easeInOut',
+        });
+        // gentle scale breathing
+        this.tweens.add({
+            targets: npcSprite,
+            scaleX: { from: 0.99, to: 1.01 },
+            scaleY: { from: 1.0, to: 1.02 },
+            duration: 3200,
+            yoyo: true,
+            repeat: -1,
+            ease: 'Sine.easeInOut',
+        });
+        // aura pulse
+        this.tweens.add({
+            targets: npcGlow,
+            alpha: { from: 0.15, to: 0.35 },
+            scale: { from: 1.6, to: 2.0 },
+            duration: 2400,
+            yoyo: true,
+            repeat: -1,
+            ease: 'Sine.easeInOut',
+        });
+    }
+
+    onNpcClick() {
+        this.audio.ensure();
+        this.audio.chime(880, { gain: 0.06 });
+        // Update dialog state from game state
+        this.dialog.updateQuestState({
+            hasFirstBloom: this.bloomCount >= 1,
+            totalBlooms: this.bloomCount,
+            currentBlooms: this.tiles.flat().filter(t => t.gridData.state === STATE.BLOOMING).length,
+            hasRareSeed: (this.selectedSeed?.id === 'flower_rare_nguyet_cuc') ||
+                         this.economy.getInventoryCount('flower_rare_nguyet_cuc') > 0,
+            spiritStones: this.economy.spiritStones,
+            completedQuests: this.economy.completedQuests,
+        });
+        this.openDialog();
+    }
+
+    /* ============================ DIALOG BOX ============================ */
+    createDialogBox() {
+        this.dialogBox = this.add.container(0, 0).setDepth(D.DIALOG).setVisible(false);
+
+        // Dimmed backdrop
+        const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x05030c, 0.5).setInteractive();
+        dim.on('pointerdown', () => this.closeDialog());
+
+        // Dialog panel
+        const panel = this.add.graphics();
+        panel.fillStyle(C.panelDeep, 0.97);
+        panel.lineStyle(4, C.gold, 1);
+        panel.fillRoundedRect(60, 320, W - 120, 440, 28);
+        panel.strokeRoundedRect(60, 320, W - 120, 440, 28);
+        panel.lineStyle(2, 0xffe3a0, 0.3);
+        panel.strokeRoundedRect(80, 340, W - 160, 400, 22);
+
+        // NPC portrait frame
+        const portraitFrame = this.add.graphics();
+        portraitFrame.fillStyle(0x241540, 0.95);
+        portraitFrame.lineStyle(3, 0xc9dff8, 0.9);
+        portraitFrame.fillRoundedRect(100, 350, 160, 180, 16);
+        portraitFrame.strokeRoundedRect(100, 350, 160, 180, 16);
+
+        this.dialogPortrait = this.add.image(180, 430, 'npc_tien_nu').setDisplaySize(130, 195);
+        this.dialogName = this.add.text(290, 370, 'Tiên Nữ Hoa Giang', {
+            fontFamily: 'Georgia, serif', fontSize: '28px', color: '#c9dff8', fontStyle: 'bold',
+            stroke: '#1b1140', strokeThickness: 5,
+        });
+        this.dialogText = this.add.text(290, 420, '', {
+            fontFamily: 'Georgia, serif', fontSize: '26px', color: '#e6d8ff',
+            wordWrap: { width: W - 440 }, lineSpacing: 8,
+        });
+
+        // Choice buttons container
+        this.dialogChoices = [];
+        for (let i = 0; i < 4; i++) {
+            const btn = this.add.container(0, 0);
+            const bg = this.add.graphics();
+            bg.fillStyle(0x2a1c4a, 0.95);
+            bg.lineStyle(2, C.gold, 0.8);
+            const text = this.add.text(0, 0, '', {
+                fontFamily: 'Georgia, serif', fontSize: '24px', color: '#ffe9c4',
+            }).setOrigin(0, 0.5);
+            const zone = this.add.zone(0, 0, 600, 52).setInteractive();
+            zone.on('pointerdown', () => this.onDialogChoice(i));
+            btn.add([bg, text, zone]);
+            btn.setVisible(false);
+            this.dialogChoices.push({ container: btn, bg, text, zone });
+        }
+
+        // Close button
+        const closeBtn = this.add.text(W - 100, 340, '✕', {
+            fontFamily: 'Arial', fontSize: '36px', color: '#ffb0b0',
+        }).setOrigin(0.5).setInteractive();
+        closeBtn.on('pointerdown', () => this.closeDialog());
+
+        this.dialogBox.add([dim, panel, portraitFrame, this.dialogPortrait, this.dialogName, this.dialogText, closeBtn]);
+        this.dialogChoices.forEach(c => this.dialogBox.add(c.container));
+    }
+
+    openDialog() {
+        const node = this.dialog.startDialogue();
+        if (!node) return;
+        this.dialogVisible = true;
+        this.dialogBox.setVisible(true).setAlpha(0);
+        this.tweens.add({ targets: this.dialogBox, alpha: 1, duration: 200 });
+        this.renderDialogNode(node);
+    }
+
+    closeDialog() {
+        this.dialogVisible = false;
+        this.tweens.add({
+            targets: this.dialogBox, alpha: 0, duration: 180,
+            onComplete: () => this.dialogBox.setVisible(false),
+        });
+    }
+
+    renderDialogNode(node) {
+        this.dialogText.setText(node.text);
+        // Layout choice buttons
+        let y = 600;
+        this.dialogChoices.forEach((c, i) => {
+            if (i < node.choices.length) {
+                c.container.setVisible(true).setPosition(300, y);
+                c.text.setText(node.choices[i].text);
+                // Redraw bg to fit text
+                const tw = Math.min(c.text.width + 40, 580);
+                c.bg.clear();
+                c.bg.fillStyle(0x2a1c4a, 0.95);
+                c.bg.lineStyle(2, C.gold, 0.8);
+                c.bg.fillRoundedRect(-10, -24, tw + 20, 48, 12);
+                c.bg.strokeRoundedRect(-10, -24, tw + 20, 48, 12);
+                c.zone.setSize(tw + 20, 48);
+                c.zone.setPosition(tw / 2, 0);
+                y += 56;
+            } else {
+                c.container.setVisible(false);
+            }
+        });
+    }
+
+    onDialogChoice(index) {
+        this.audio.click();
+        const node = this.dialog.choose(index);
+        if (node) {
+            this.renderDialogNode(node);
+        } else {
+            this.closeDialog();
+        }
     }
 
     /* ============================ GRID ============================ */
@@ -130,19 +346,29 @@ export default class GardenScene extends Phaser.Scene {
     }
 
     hoverTile(tile, on) {
-        const canPlant = this.selectedSeed && tile.gridData.state === STATE.EMPTY;
+        const data = tile.gridData;
+        const canPlant = this.selectedSeed && data.state === STATE.EMPTY;
+        const canHarvest = data.state === STATE.BLOOMING;
         if (on && canPlant) {
             this.tileHighlight.setVisible(true).setPosition(tile.x, tile.y).setAlpha(0.9);
             tile.setTint(0xbfe8ff);
+        } else if (on && canHarvest) {
+            this.tileHighlight.setVisible(true).setPosition(tile.x, tile.y).setAlpha(0.9);
+            tile.setTint(0xffe3a0);
         } else if (on === false) {
             this.tileHighlight.setVisible(false);
-            if (tile.gridData.state === STATE.EMPTY) tile.clearTint();
+            if (data.state === STATE.EMPTY) tile.clearTint();
         }
     }
 
     handleTileClick(tile) {
         this.audio.ensure();
         const data = tile.gridData;
+        // If blooming, harvest it
+        if (data.state === STATE.BLOOMING) {
+            this.harvestTile(tile);
+            return;
+        }
         if (data.state !== STATE.EMPTY) {
             this.tweens.add({ targets: tile, scale: { from: 1.0, to: 1.06 }, yoyo: true, duration: 90 });
             this.audio.click();
@@ -153,6 +379,109 @@ export default class GardenScene extends Phaser.Scene {
             return;
         }
         this.plantSeed(tile);
+    }
+
+    /* ============================ HARVEST (NEW) ============================ */
+    harvestTile(tile) {
+        const data = tile.gridData;
+        if (data.state !== STATE.BLOOMING) return;
+        const seedId = data.seedId;
+
+        this.audio.ensure();
+        this.audio.chime(1046.5, { gain: 0.08 });
+        this.audio.pluck(880, { gain: 0.06 });
+
+        // Economy reward
+        const reward = this.economy.harvestFlower(seedId);
+        const newQuests = this.economy.checkQuests();
+
+        // Visual: sparkle burst + reward popup
+        const seed = SEED_BY_ID[seedId];
+        this.emitPetals(tile.x, tile.y - 26, seedId, 14);
+        this.sparks.emitParticleAt(tile.x, tile.y - 26, 10);
+
+        // Destroy bloom sprites
+        const bloomSprite = data.bloomSprite;
+        const bloomGlow = data.bloomGlow;
+        if (bloomSprite) {
+            this.tweens.add({
+                targets: bloomSprite, scale: 0.1, alpha: 0, duration: 300,
+                onComplete: () => { if (bloomSprite.active) bloomSprite.destroy(); },
+            });
+        }
+        if (bloomGlow) {
+            this.tweens.add({
+                targets: bloomGlow, alpha: 0, duration: 300,
+                onComplete: () => { if (bloomGlow.active) bloomGlow.destroy(); },
+            });
+        }
+
+        // Floating reward text
+        const rewardText = `+${reward.harmony} ✿  +${reward.spiritStones} 💎`;
+        const pop = this.add.text(tile.x, tile.y - 60, rewardText, {
+            fontFamily: 'Georgia, serif', fontSize: '28px', color: '#ffe9a8', fontStyle: 'bold',
+            stroke: '#3a1c5e', strokeThickness: 6,
+        }).setOrigin(0.5).setDepth(D.PETALS + 3);
+        this.tweens.add({
+            targets: pop, y: tile.y - 130, alpha: 0, duration: 1100, ease: 'Cubic.easeOut',
+            onComplete: () => pop.destroy(),
+        });
+
+        // Reset plot instantly
+        data.state = STATE.EMPTY;
+        data.seedId = null;
+        data.watered = false;
+        data.plantSprites = null;
+        data.bloomSprite = null;
+        data.bloomGlow = null;
+        tile.clearTint();
+        this.bloomCount--;
+
+        // Update HUD
+        this.harmony = this.economy.harmony;
+        this.spiritStones = this.economy.spiritStones;
+        this.updateHud();
+
+        // Quest completion celebration
+        if (newQuests.length > 0) {
+            this.showQuestCompletion(newQuests);
+        }
+    }
+
+    harvestAll() {
+        const bloomingTiles = this.tiles.flat().filter(t => t.gridData.state === STATE.BLOOMING);
+        if (bloomingTiles.length === 0) {
+            this.audio.click();
+            this.flashHint('Chưa có hoa nào để thu hoạch ✧');
+            return;
+        }
+        this.audio.ensure();
+        this.audio.splash();
+        this.audio.chime(783.99, { gain: 0.1 });
+
+        // Stagger harvest animation
+        bloomingTiles.forEach((tile, i) => {
+            this.time.delayedCall(i * 80, () => this.harvestTile(tile));
+        });
+    }
+
+    showQuestCompletion(quests) {
+        quests.forEach((q, i) => {
+            this.time.delayedCall(400 + i * 600, () => {
+                const banner = this.add.text(W / 2, 250 + i * 70, `🏆 ${q.name} — +${q.reward} 💎`, {
+                    fontFamily: 'Georgia, serif', fontSize: '34px', color: '#ffe9a8', fontStyle: 'bold',
+                    stroke: '#7a4a1e', strokeThickness: 8,
+                }).setOrigin(0.5).setDepth(D.MODAL - 5).setScale(0.5).setAlpha(0);
+                this.tweens.add({
+                    targets: banner, scale: 1, alpha: 1, duration: 400, ease: 'Back.easeOut',
+                    onComplete: () => {
+                        this.tweens.add({ targets: banner, alpha: 0, y: banner.y - 40, delay: 1500, duration: 500 });
+                    },
+                });
+                this.audio.chime(1046.5, { gain: 0.1 });
+                this.audio.chime(1318.5, { gain: 0.08, when: 0.1 });
+            });
+        });
     }
 
     plantSeed(tile) {
@@ -189,8 +518,6 @@ export default class GardenScene extends Phaser.Scene {
 
     /* ============================ SEARCH DRAWER ============================ */
     createDrawer() {
-        // Bottom sheet. Children use absolute coords for the OPEN state;
-        // the container slides from y=H to y=0.
         this.drawer = this.add.container(0, H).setDepth(D.DRAWER);
         const panel = this.add.graphics();
         panel.fillStyle(C.ink, 0.97);
@@ -201,7 +528,7 @@ export default class GardenScene extends Phaser.Scene {
         panel.fillRoundedRect(40, H - 604, W - 80, 92, 18);
         this.drawer.add(panel);
 
-        // close button (top-right of header)
+        // close button
         const closeBtn = this.add.container(960, H - 574);
         const closeBg = this.add.graphics();
         closeBg.fillStyle(0x2a1c4a, 0.98);
@@ -216,15 +543,13 @@ export default class GardenScene extends Phaser.Scene {
         closeBtn.add([closeBg, closeLabel, closeZone]);
         this.drawer.add(closeBtn);
 
-        // search magnifier icon inside the input's left padding
+        // search icon
         const searchIcon = this.add.image(230, H - 574, 'icon_search').setDisplaySize(52, 52).setAlpha(0.95);
         this.drawer.add(searchIcon);
 
-        // DOM search input (rendered above the canvas by Phaser)
+        // DOM search input
         this.searchInput = this.add.dom(
-            500,
-            H - 574,
-            'input',
+            500, H - 574, 'input',
             'width:620px;height:78px;box-sizing:border-box;background:rgba(24,14,44,0.92);' +
                 'border:2px solid rgba(216,162,78,0.9);border-radius:14px;color:#ffe9c4;' +
                 'font-size:30px;padding:0 18px 0 78px;outline:none;font-family:Georgia,serif;'
@@ -237,7 +562,7 @@ export default class GardenScene extends Phaser.Scene {
         this.seedCards = SEED_CATALOG.map((seed, i) => this.createSeedCard(seed, i));
         this.seedCards.forEach((c) => this.drawer.add(c.container));
 
-        // selected-seed chip (shown when drawer is closed)
+        // selected-seed chip
         this.selectedChip = this.add.container(540, 1435).setDepth(D.CHIP).setVisible(false);
         const chipBg = this.add.graphics();
         chipBg.fillStyle(0x241540, 0.95);
@@ -258,7 +583,7 @@ export default class GardenScene extends Phaser.Scene {
 
     createSeedCard(seed, index) {
         const cx = 148 + index * 264;
-        const cy = H - 390; // card center (absolute coords in closed container state)
+        const cy = H - 390;
         const container = this.add.container(cx, cy);
         const w = 232;
         const h = 240;
@@ -275,7 +600,6 @@ export default class GardenScene extends Phaser.Scene {
         };
         draw(false);
 
-        // aspect-correct flower thumbnail
         const frame = this.textures.get(seed.sprite_key).getSourceImage();
         const aspect = frame.width / frame.height;
         const thumbH = 132;
@@ -283,11 +607,13 @@ export default class GardenScene extends Phaser.Scene {
         const glow = this.add.image(0, -34, 'glow').setTint(seed.petals).setAlpha(0.35).setScale(0.9, 0.72);
         const flower = this.add.image(0, -30, seed.sprite_key).setDisplaySize(thumbW, thumbH);
         const name = this.add.text(0, 64, seed.name, {
-            fontFamily: 'Georgia, serif', fontSize: '26px', color: C.text,
+            fontFamily: 'Georgia, serif', fontSize: '24px', color: C.text,
             align: 'center', wordWrap: { width: w - 20 }, fontStyle: 'bold',
         }).setOrigin(0.5);
-        const sub = this.add.text(0, 104, `${seed.colorName} · ${Math.round(seed.growthMs / 1000)}s`, {
-            fontFamily: 'Georgia, serif', fontSize: '21px', color: '#b9a3dd',
+        const cost = this.economy.getSeedCost(seed.id);
+        const costLabel = cost > 0 ? `${cost} 💎` : 'Miễn phí';
+        const sub = this.add.text(0, 104, `${seed.colorName} · ${costLabel}`, {
+            fontFamily: 'Georgia, serif', fontSize: '20px', color: '#b9a3dd',
         }).setOrigin(0.5);
 
         container.add([bg, glow, flower, name, sub]);
@@ -303,7 +629,6 @@ export default class GardenScene extends Phaser.Scene {
         this.audio.click();
         this.drawerOpen = true;
         this.tweens.killTweensOf([this.drawer, this.searchInput]);
-        // keep the DOM input in sync while the sheet slides up
         this.searchInput.setVisible(true).setAlpha(0).setY(H + (H - 574));
         this.tweens.add({
             targets: this.drawer,
@@ -318,7 +643,6 @@ export default class GardenScene extends Phaser.Scene {
             duration: 300,
             ease: 'Cubic.easeOut',
         });
-        // redraw cards for current filter, then fade them up
         this.applyFilter(this.searchQuery);
         this.seedCards.forEach((card, i) => {
             card.container.setAlpha(0).setY(H - 390 + 30);
@@ -373,7 +697,6 @@ export default class GardenScene extends Phaser.Scene {
         this.audio.click();
         this.selectedSeed = seed;
         this.seedCards.forEach((c) => c.draw(c.seed.id === seed.id));
-        // close drawer after a beat so the player sees their choice
         this.time.delayedCall(200, () => this.closeDrawer());
         this.showSelectedChip(seed);
         this.updateHint();
@@ -410,43 +733,59 @@ export default class GardenScene extends Phaser.Scene {
         });
 
         // Harmony badge
-        const hud = this.add.container(860, 92).setDepth(10);
+        const hud = this.add.container(860, 72).setDepth(10);
         const badge = this.add.graphics();
         badge.fillStyle(0x241540, 0.92);
         badge.lineStyle(3, C.gold, 0.9);
-        badge.fillRoundedRect(-190, -58, 380, 116, 26);
-        badge.strokeRoundedRect(-190, -58, 380, 116, 26);
-        const lotus = this.add.image(-140, 0, 'glow').setTint(0xffd97a).setScale(0.42);
-        this.harmonyText = this.add.text(-108, -16, 'Điểm Hòa Hợp', {
-            fontFamily: 'Georgia, serif', fontSize: '22px', color: '#d8c3f2',
+        badge.fillRoundedRect(-190, -42, 380, 84, 22);
+        badge.strokeRoundedRect(-190, -42, 380, 84, 22);
+        const lotus = this.add.image(-148, 0, 'glow').setTint(0xffd97a).setScale(0.35);
+        this.harmonyText = this.add.text(-118, -12, 'Hòa Hợp', {
+            fontFamily: 'Georgia, serif', fontSize: '18px', color: '#d8c3f2',
         }).setOrigin(0, 0.5);
-        this.harmonyValue = this.add.text(-108, 18, '✿ 0', {
-            fontFamily: 'Georgia, serif', fontSize: '32px', color: '#ffe9a8', fontStyle: 'bold',
+        this.harmonyValue = this.add.text(-118, 12, '✿ 0', {
+            fontFamily: 'Georgia, serif', fontSize: '28px', color: '#ffe9a8', fontStyle: 'bold',
         }).setOrigin(0, 0.5);
         hud.add([badge, lotus, this.harmonyText, this.harmonyValue]);
 
-        // hint line under title
-        this.hintBg = this.add.rectangle(W / 2, 168, 900, 56, 0x1a0f2e, 0.62)
+        // Spirit Stones badge
+        const stoneHud = this.add.container(860, 162).setDepth(10);
+        const stoneBadge = this.add.graphics();
+        stoneBadge.fillStyle(0x241540, 0.92);
+        stoneBadge.lineStyle(3, 0xb26bff, 0.9);
+        stoneBadge.fillRoundedRect(-190, -36, 380, 72, 20);
+        stoneBadge.strokeRoundedRect(-190, -36, 380, 72, 20);
+        this.stoneIcon = this.add.image(-148, 0, 'icon_spirit_stone').setDisplaySize(48, 48);
+        this.stoneText = this.add.text(-118, -8, 'Đá Linh Khí', {
+            fontFamily: 'Georgia, serif', fontSize: '17px', color: '#c9b2ff',
+        }).setOrigin(0, 0.5);
+        this.stoneValue = this.add.text(-118, 14, '💎 10', {
+            fontFamily: 'Georgia, serif', fontSize: '26px', color: '#e8d4ff', fontStyle: 'bold',
+        }).setOrigin(0, 0.5);
+        stoneHud.add([stoneBadge, this.stoneIcon, this.stoneText, this.stoneValue]);
+
+        // hint line
+        this.hintBg = this.add.rectangle(W / 2, 218, 900, 52, 0x1a0f2e, 0.62)
             .setStrokeStyle(2, C.gold, 0.5).setDepth(4);
-        this.hintText = this.add.text(W / 2, 168, '', {
-            fontFamily: 'Georgia, serif', fontSize: '28px', color: '#efe0ff',
+        this.hintText = this.add.text(W / 2, 218, '', {
+            fontFamily: 'Georgia, serif', fontSize: '26px', color: '#efe0ff',
             align: 'center', stroke: '#1b1140', strokeThickness: 6,
         }).setOrigin(0.5).setDepth(5);
     }
 
     updateHint() {
         if (this.selectedSeed && !this.drawerOpen) {
-            this.hintText.setText('✨ Đã chọn: ' + this.selectedSeed.name + ' — chạm vào ô đất trống để gieo');
+            this.hintText.setText('✨ Đã chọn: ' + this.selectedSeed.name + ' — chạm/kéo vào ô đất để gieo · vuốt qua hoa nở để thu hoạch');
             this.hintText.setColor('#ffe9a8');
-            this.hintBg.setSize(1000, 56);
+            this.hintBg.setSize(1020, 52);
         } else if (this.drawerOpen) {
             this.hintText.setText('🔍 Gõ từ khóa (tim · vang · xanh · gold · blue) rồi chọn hạt giống');
             this.hintText.setColor('#d8c3f2');
-            this.hintBg.setSize(1000, 56);
+            this.hintBg.setSize(1000, 52);
         } else {
-            this.hintText.setText('Mở Ngăn Hạt Giống ⬇ để chọn hoa, gieo lên nền hoa viên');
+            this.hintText.setText('Mở Ngăn Hạt Giống ⬇ · Chạm NPC để nhận nhiệm vụ · Vuốt để thu hoạch');
             this.hintText.setColor('#efe0ff');
-            this.hintBg.setSize(900, 56);
+            this.hintBg.setSize(980, 52);
         }
     }
 
@@ -459,13 +798,16 @@ export default class GardenScene extends Phaser.Scene {
     }
 
     updateHud() {
+        this.harmony = this.economy.harmony;
+        this.spiritStones = this.economy.spiritStones;
         this.harmonyValue.setText(`✿ ${this.harmony}`);
+        this.stoneValue.setText(`💎 ${this.spiritStones}`);
     }
 
-    /* ============================ ACTION BAR ============================ */
+    /* ============================ ACTION BAR (with 172px touch zones) ============================ */
     createActionBar() {
-        // drawer button
-        this.drawerBtn = this.add.container(210, 1812).setDepth(D.BAR);
+        // --- Drawer button (left) ---
+        this.drawerBtn = this.add.container(160, 1780).setDepth(D.BAR);
         const db = this.add.graphics();
         const dbDraw = (hover) => {
             db.clear();
@@ -478,13 +820,12 @@ export default class GardenScene extends Phaser.Scene {
         };
         dbDraw(false);
         const dbIcon = this.add.image(0, 0, 'icon_seed_drawer').setDisplaySize(150, 138);
-        const dbLabel = this.add.text(0, 128, 'Ngăn Hạt Giống', {
-            fontFamily: 'Georgia, serif', fontSize: '24px', color: C.text, fontStyle: 'bold',
+        const dbLabel = this.add.text(0, 128, 'Hạt Giống', {
+            fontFamily: 'Georgia, serif', fontSize: '22px', color: C.text, fontStyle: 'bold',
             stroke: '#1b1140', strokeThickness: 5,
         }).setOrigin(0.5);
-        const dbZone = this.add.circle(0, 0, 108, 0xffffff, 0.001).setInteractive(
-            new Phaser.Geom.Circle(0, 0, 108), Phaser.Geom.Circle.Contains
-        );
+        // 172px invisible touch zone (108px button + 64px padding)
+        const dbZone = this.add.zone(0, 0, TOUCH_ZONE_RADIUS * 2, TOUCH_ZONE_RADIUS * 2, 0xffffff, 0.001).setInteractive();
         dbZone.on('pointerdown', () => {
             this.audio.ensure();
             if (this.drawerOpen) this.closeDrawer();
@@ -494,8 +835,33 @@ export default class GardenScene extends Phaser.Scene {
         dbZone.on('pointerout', () => dbDraw(false));
         this.drawerBtn.add([db, dbIcon, dbLabel, dbZone]);
 
-        // one-click water button
-        this.waterBtn = this.add.container(870, 1812).setDepth(D.BAR);
+        // --- Harvest All button (center) - Cổ Phong Sickle ---
+        this.harvestAllBtn = this.add.container(540, 1780).setDepth(D.BAR);
+        const hb = this.add.graphics();
+        const hbDraw = (hover) => {
+            hb.clear();
+            hb.fillStyle(0x3a2810, 0.96);
+            hb.lineStyle(4, hover ? 0xffe3a0 : C.gold, 1);
+            hb.fillCircle(0, 0, 108);
+            hb.strokeCircle(0, 0, 108);
+            hb.fillStyle(0x1a1008, 0.8);
+            hb.fillCircle(0, 0, 96);
+        };
+        hbDraw(false);
+        const hbIcon = this.add.image(0, 0, 'icon_sickle').setDisplaySize(140, 140);
+        const hbLabel = this.add.text(0, 128, 'Thu Hoạch ✦', {
+            fontFamily: 'Georgia, serif', fontSize: '22px', color: '#ffe9a8', fontStyle: 'bold',
+            stroke: '#3a2810', strokeThickness: 5,
+        }).setOrigin(0.5);
+        // 172px invisible touch zone
+        const hbZone = this.add.zone(0, 0, TOUCH_ZONE_RADIUS * 2, TOUCH_ZONE_RADIUS * 2, 0xffffff, 0.001).setInteractive();
+        hbZone.on('pointerdown', () => this.harvestAll());
+        hbZone.on('pointerover', () => hbDraw(true));
+        hbZone.on('pointerout', () => hbDraw(false));
+        this.harvestAllBtn.add([hb, hbIcon, hbLabel, hbZone]);
+
+        // --- Water button (right) ---
+        this.waterBtn = this.add.container(920, 1780).setDepth(D.BAR);
         const wb = this.add.graphics();
         const wbDraw = (hover) => {
             wb.clear();
@@ -508,21 +874,16 @@ export default class GardenScene extends Phaser.Scene {
         };
         wbDraw(false);
         const wbIcon = this.add.image(0, 0, 'icon_water_bucket').setDisplaySize(140, 140);
-        const wbLabel = this.add.text(0, 128, 'Tưới Một Chạm ✦', {
-            fontFamily: 'Georgia, serif', fontSize: '24px', color: '#aef4ff', fontStyle: 'bold',
+        const wbLabel = this.add.text(0, 128, 'Tưới Nước', {
+            fontFamily: 'Georgia, serif', fontSize: '22px', color: '#aef4ff', fontStyle: 'bold',
             stroke: '#0a2830', strokeThickness: 5,
         }).setOrigin(0.5);
-        const wbZone = this.add.circle(0, 0, 108, 0xffffff, 0.001).setInteractive(
-            new Phaser.Geom.Circle(0, 0, 108), Phaser.Geom.Circle.Contains
-        );
+        // 172px invisible touch zone
+        const wbZone = this.add.zone(0, 0, TOUCH_ZONE_RADIUS * 2, TOUCH_ZONE_RADIUS * 2, 0xffffff, 0.001).setInteractive();
         wbZone.on('pointerdown', () => this.onWaterButton());
         wbZone.on('pointerover', () => wbDraw(true));
         wbZone.on('pointerout', () => wbDraw(false));
         this.waterBtn.add([wb, wbIcon, wbLabel, wbZone]);
-
-        // center decorative lantern divider
-        this.add.image(540, 1806, 'glow').setTint(0xffc46b).setScale(0.55, 0.8).setAlpha(0.8);
-        this.add.circle(540, 1806, 10, 0xffe3a0, 1).setDepth(D.BAR + 1);
     }
 
     onWaterButton() {
@@ -530,7 +891,7 @@ export default class GardenScene extends Phaser.Scene {
         const planted = this.tiles.flat().filter((t) => t.gridData.state !== STATE.EMPTY);
         if (planted.length === 0) {
             this.audio.click();
-            this.tweens.add({ targets: this.waterBtn, x: { from: 870, to: 878 }, yoyo: true, repeat: 2, duration: 60 });
+            this.tweens.add({ targets: this.waterBtn, x: { from: 920, to: 928 }, yoyo: true, repeat: 2, duration: 60 });
             this.flashHint('Chưa có hạt nào được gieo — hãy chọn hoa và gieo trước ✧');
             return;
         }
@@ -557,13 +918,11 @@ export default class GardenScene extends Phaser.Scene {
             align: 'center', lineSpacing: 10,
         }).setOrigin(0.5);
 
-        // VIP water icon
         const vip = this.add.container(W / 2, 920);
         const vipGlow = this.add.image(0, 0, 'glow').setTint(0x00e5ff).setScale(1.6, 1.2).setAlpha(0.55);
         const vipIcon = this.add.image(0, 0, 'icon_water_bucket').setDisplaySize(180, 180);
         vip.add([vipGlow, vipIcon]);
 
-        // buttons (each is a container with graphics + text + zone)
         const grayBtn = this.makeModalButton(W / 2, 1072, 'Tưới Ngay (Miễn Phí)', false);
         const goldBtn = this.makeModalButton(W / 2, 1152, '▶ Xem Quảng Cáo · +3 Hòa Hợp', true);
         goldBtn.zone.on('pointerdown', () => this.watchAd());
@@ -617,7 +976,6 @@ export default class GardenScene extends Phaser.Scene {
         this.adWatching = true;
         this.audio.ensure();
         this.audio.startAmbient();
-        // simulated rewarded ad: 3-second countdown
         let left = 3;
         this.adTimerText.setText(`Đang phát quảng cáo… ${left}`);
         const timer = this.time.addEvent({
@@ -637,12 +995,60 @@ export default class GardenScene extends Phaser.Scene {
                     this.time.delayedCall(700, () => {
                         this.adWatching = false;
                         this.adTimerText.setText('');
-                        this.harmony += 3;
+                        this.economy.harmony += 3;
+                        this.economy.spiritStones += 2;
                         this.updateHud();
                         this.closeModal(true);
                     });
                 }
             },
+        });
+    }
+
+    /* ============================ GESTURE SYSTEM ============================ */
+    setupGestures() {
+        // Drag-to-Plant: when a seed is selected, dragging across empty tiles plants them
+        // Swipe-to-Harvest: swiping across blooming tiles harvests them
+        this.input.on('pointerdown', (pointer) => {
+            if (this.drawerOpen || this.dialogVisible || this.adWatching) return;
+            this.gestureActive = true;
+            this.gestureStartX = pointer.x;
+            this.gestureStartY = pointer.y;
+            this.lastDragTile = null;
+        });
+
+        this.input.on('pointermove', (pointer) => {
+            if (!this.gestureActive) return;
+            if (this.drawerOpen || this.dialogVisible) return;
+
+            // Convert pointer to game coords
+            const worldX = pointer.x;
+            const worldY = pointer.y;
+
+            // Find which tile is under the pointer
+            const gridPos = IsoMath.screenToGrid(worldX, worldY, ORIGIN.x, ORIGIN.y);
+            const { gridX: c, gridY: r } = gridPos;
+
+            if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return;
+            const tile = this.tiles[r][c];
+            if (tile === this.lastDragTile) return;
+            this.lastDragTile = tile;
+
+            const data = tile.gridData;
+
+            // Drag-to-Plant: if we have a selected seed and tile is empty
+            if (this.selectedSeed && data.state === STATE.EMPTY) {
+                this.plantSeed(tile);
+            }
+            // Swipe-to-Harvest: if tile is blooming
+            else if (data.state === STATE.BLOOMING) {
+                this.harvestTile(tile);
+            }
+        });
+
+        this.input.on('pointerup', () => {
+            this.gestureActive = false;
+            this.lastDragTile = null;
         });
     }
 
@@ -666,7 +1072,6 @@ export default class GardenScene extends Phaser.Scene {
             growIndex++;
         });
 
-        // staggered cascade bloom after the droplets land
         this.time.delayedCall(650, () => {
             let k = 0;
             plantable.forEach((tile) => {
@@ -706,6 +1111,10 @@ export default class GardenScene extends Phaser.Scene {
         data.state = STATE.BLOOMING;
         tile.clearTint();
         this.bloomCount++;
+
+        // Record bloom in economy
+        this.economy.recordBloom(data.seedId);
+        const newQuests = this.economy.checkQuests();
 
         // ground highlight
         const groundGlow = this.add.image(tile.x, tile.y, 'glow')
@@ -748,22 +1157,26 @@ export default class GardenScene extends Phaser.Scene {
         data.bloomGlow = glow;
         this.tweens.add({ targets: glow, alpha: 0.3, duration: 1400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
 
-        // audio: pentatonic walk through the blooms
+        // audio
         this.audio.chime(SEED_CHIME_BASE[this.bloomCount % SEED_CHIME_BASE.length], { gain: 0.09 });
         if (this.bloomCount % 4 === 0) {
             this.audio.flute(SEED_CHIME_BASE[(this.bloomCount / 4) % 5], { gain: 0.06 });
         }
 
-        this.harmony += 1;
         this.updateHud();
-        const pop = this.add.text(tile.x, tile.y - 92, '+1 ✿', {
-            fontFamily: 'Georgia, serif', fontSize: '30px', color: '#ffe9a8', fontStyle: 'bold',
+        const pop = this.add.text(tile.x, tile.y - 92, '✿ Nở!', {
+            fontFamily: 'Georgia, serif', fontSize: '28px', color: '#ffe9a8', fontStyle: 'bold',
             stroke: '#3a1c5e', strokeThickness: 6,
         }).setOrigin(0.5).setDepth(D.PETALS + 3);
         this.tweens.add({
             targets: pop, y: tile.y - 140, alpha: 0, duration: 900, ease: 'Cubic.easeOut',
             onComplete: () => pop.destroy(),
         });
+
+        // Quest completion check
+        if (newQuests.length > 0) {
+            this.showQuestCompletion(newQuests);
+        }
 
         // full mosaic celebration
         if (this.bloomCount >= ROWS * COLS && !this.fullMosaicShown) {
@@ -795,7 +1208,6 @@ export default class GardenScene extends Phaser.Scene {
 
     /* ============================ VFX EMITTERS ============================ */
     createParticleEmitters() {
-        // petal burst emitters — one per flower color
         this.petalBursts = {};
         for (const seed of SEED_CATALOG) {
             this.petalBursts[seed.id] = this.add.particles(0, 0, 'petal', {
@@ -821,7 +1233,6 @@ export default class GardenScene extends Phaser.Scene {
             blendMode: Phaser.BlendModes.ADD,
             emitting: false,
         }).setDepth(D.PETALS + 1);
-        // gentle petal rain for the celebration
         this.petalRain = this.add.particles(0, 0, 'petal', {
             x: { min: -80, max: W + 80 },
             y: -60,
@@ -831,7 +1242,7 @@ export default class GardenScene extends Phaser.Scene {
             scale: { start: 0.5, end: 0.2 },
             alpha: { start: 0.9, end: 0 },
             rotate: { min: -180, max: 180 },
-            tint: [0xffd97a, 0xc98bff, 0x7ff7ff, 0xff9ec4],
+            tint: [0xffd97a, 0xc98bff, 0x7ff7ff, 0xff9ec4, 0xe8b4ff],
             frequency: -1,
             emitting: false,
         }).setDepth(D.PETALS + 2);

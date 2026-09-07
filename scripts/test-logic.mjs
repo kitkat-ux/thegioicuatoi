@@ -560,5 +560,81 @@ check('quest rows: completion by value (green_thumb at 10 blooms)', (() => {
         /new AlchemyModal\(this,/.test(scene2) && read2('src/ui/AlchemyModal.js').length > 500);
 }
 
+/* ==========================================================================
+   Critical bugfix pass — diamond economy, tool separation, modal propagation
+   ========================================================================== */
+{
+    const bus = new EventManager({ label: 'eco-test' });
+    const eco = new EconomySystem().bind(bus);
+    eco.init();
+    const diamondEvents = [];
+    bus.on(EVENTS.DIAMONDS_CHANGED, (p) => diamondEvents.push(p));
+    const refused = [];
+    bus.on(EVENTS.DIAMONDS_INSUFFICIENT, (p) => refused.push(p));
+
+    // premium seed purchase deducts + announces
+    const before = eco.spiritStones;
+    const buy = eco.purchaseSeed('flower_purple_wisteria');
+    check('Economy: premium seed purchase deducts diamonds', buy.success && eco.spiritStones === before - 5);
+    check('Economy: purchase publishes DIAMONDS_CHANGED with the new balance',
+        diamondEvents.length === 1 && diamondEvents[0].diamonds === before - 5 && diamondEvents[0].delta === -5 && diamondEvents[0].reason === 'seed-purchase');
+    check('Economy: SEED_PURCHASED carries the owned count', bus.wasEmitted(EVENTS.SEED_PURCHASED, (p) => p.seedId === 'flower_purple_wisteria' && p.owned === 1));
+
+    // refusal path: nothing deducted, refusal announced
+    const b2 = eco.spiritStones;
+    const fail = eco.purchaseSeed('flower_rare_nguyet_cuc');
+    check('Economy: unaffordable seed is refused without touching the balance', fail.success === false && eco.spiritStones === b2);
+    check('Economy: refusal publishes DIAMONDS_INSUFFICIENT (dialog hook)', refused.length === 1 && refused[0].cost === 25 && refused[0].reason === 'seed-purchase');
+
+    // consumeSeed: free seeds unlimited, premium seeds need a packet
+    check('Economy: starter seeds are unlimited', [1, 2, 3, 4, 5, 6, 7].every(() => eco.consumeSeed('flower_cyan_orchid')));
+    check('Economy: premium seed packet is consumed on planting', eco.consumeSeed('flower_purple_wisteria') === true && eco.getInventoryCount('flower_purple_wisteria') === 0);
+    check('Economy: empty premium packet cannot be planted for free', eco.consumeSeed('flower_purple_wisteria') === false);
+
+    // quick-water pricing
+    check('Economy: quick-water costs 1 💎 for a small batch', eco.getQuickWaterCost(1) === 1 && eco.getQuickWaterCost(12) === 1);
+    check('Economy: quick-water costs 2 💎 for a big batch', eco.getQuickWaterCost(13) === 2 && eco.getQuickWaterCost(36) === 2);
+    check('Economy: quick-water is never free', ECONOMY_DEFAULTS.quickWaterCost >= 1);
+    const b3 = eco.spiritStones;
+    const pay = eco.payQuickWater(4);
+    check('Economy: paying for quick-water deducts 1 💎', pay.success && pay.cost === 1 && eco.spiritStones === b3 - 1);
+    eco.spiritStones = 0;
+    const broke = eco.payQuickWater(4);
+    check('Economy: quick-water refused at 0 💎 (no instant growth)', broke.success === false && /Không đủ Đá Linh Khí/.test(broke.message));
+    check('Economy: addDiamonds credits + announces', (() => {
+        const n = diamondEvents.length;
+        eco.addDiamonds(2, 'rewarded-ad');
+        return eco.spiritStones === 2 && diamondEvents.length === n + 1 && diamondEvents[n].reason === 'rewarded-ad';
+    })());
+    check('Economy: unbound economy still works (bus optional)', (() => {
+        const e = new EconomySystem();
+        e.init();
+        return e.purchaseSeed('flower_purple_wisteria').success && e.spiritStones === 5;
+    })());
+
+    const root = path.resolve(new URL('.', import.meta.url).pathname, '..');
+    const read3 = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+    const scene3 = read3('src/scenes/GardenScene.js');
+    check('Scene: SICKLE tool branch returns before any planting logic',
+        /if \(this\.activeTool === TOOL\.SICKLE\) \{[\s\S]*?return;\s*\}\s*\n\s*\/\* ---- SEED/.test(scene3));
+    check('Scene: sickle swipe never plants, seed drag never harvests',
+        /activeTool === TOOL\.SEED\)[\s\S]{0,200}tryPlantSeed\(tile\)/.test(scene3) && /activeTool === TOOL\.SICKLE\)[\s\S]{0,260}harvestTile\(tile\)/.test(scene3));
+    check('Scene: HUD listens for DIAMONDS_CHANGED', /b\.on\(EVENTS\.DIAMONDS_CHANGED/.test(scene3));
+    check('Scene: title block padded by the 30px mobile safe area', /const SAFE_TOP = 30;/.test(scene3) && /44 \+ SAFE_TOP/.test(scene3));
+    check('Scene: quick-water is paid through the economy', /payQuickWater\(/.test(scene3) && /showNotice\(/.test(scene3));
+    check('index.html: shell pads env(safe-area-inset-top)', /padding-top:\s*env\(safe-area-inset-top/.test(read3('index.html')));
+
+    for (const rel of ['src/ui/AlchemyModal.js', 'src/ui/FishingModal.js', 'src/ui/BeastModal.js']) {
+        const src = read3(rel);
+        check(`${rel}: backdrop close is guarded + panel shield stops propagation`,
+            /bindBackdropClose\(/.test(src) && /createPanelShield\(/.test(src) && /guarded\(/.test(src));
+    }
+    const beast = read3('src/ui/BeastModal.js');
+    check('BeastModal: dark Guofeng theme (#121016 + gold frame)', /0x121016/.test(beast) && /lineStyle\(6, T\.gold, 1\)/.test(beast));
+    check('BeastModal: beasts shown one at a time (tabs + carousel), never stacked', /makeTab\(/.test(beast) && /step\(delta\)/.test(beast) && /setVisible\(false\)/.test(beast));
+    const modalInput = read3('src/ui/modalInput.js');
+    check('modalInput: stopPropagation is what the shield calls', /stopPropagation\(\)/.test(modalInput));
+}
+
 console.log(fails === 0 ? '\nALL TESTS PASSED' : `\n${fails} TEST(S) FAILED`);
 process.exit(fails === 0 ? 0 : 1);

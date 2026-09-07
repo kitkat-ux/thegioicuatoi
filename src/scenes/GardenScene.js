@@ -26,10 +26,20 @@ const COLS = 6;
 
 const STATE = { EMPTY: 'EMPTY', PLANTED: 'PLANTED', GROWING: 'GROWING', BLOOMING: 'BLOOMING' };
 
+/* Active tool — the plot interaction is STRICTLY tool-scoped:
+   SEED   → only plants on EMPTY plots (never harvests),
+   SICKLE → only harvests BLOOMING plots and clears them (never plants),
+   NONE   → a single tap on a bloom still harvests it; nothing can be planted. */
+export const TOOL = { NONE: 'NONE', SEED: 'SEED', SICKLE: 'SICKLE' };
+
+/* Mobile safe-area: keep the top-left title clear of notches / status bars. */
+const SAFE_TOP = 30;
+
 /* ------------------------- UI palette ------------------------- */
 const C = {
     gold: 0xd8a24e,
     goldLight: 0xffe3a0,
+    goldDim: 0x8a6a3a,
     ink: 0x1a0f2e,
     panel: 0x241540,
     panelDeep: 0x181026,
@@ -86,6 +96,7 @@ export default class GardenScene extends Phaser.Scene {
         this.audio = null;
         this.tiles = [];
         this.selectedSeed = null;
+        this.activeTool = TOOL.NONE;
         this.searchQuery = '';
         this.harmony = 0;
         this.plantedCount = 0;
@@ -189,7 +200,7 @@ export default class GardenScene extends Phaser.Scene {
         this.bus = new EventManager({ label: 'GardenScene' });
 
         // Initialize economy and dialog systems
-        this.economy = new EconomySystem();
+        this.economy = new EconomySystem().bind(this.bus);
         this.economy.init();
         this.dialog = new DialogSystem();
 
@@ -265,6 +276,27 @@ export default class GardenScene extends Phaser.Scene {
         // System 5 gameplay buffs: the furnace publishes, the garden applies.
         b.on(EVENTS.ELIXIR_CONSUMED, (p) => this.onElixirConsumed(p), { owner: 'garden' });
         b.on(EVENTS.ALCHEMY_BUFF_EXPIRED, (p) => this.onAlchemyBuffExpired(p), { owner: 'garden' });
+        // Economy: every Đá Linh Khí movement (purchase, quick-water, harvest,
+        // quest, ad) re-syncs the HUD badge + the drawer's owned/afford state.
+        b.on(EVENTS.DIAMONDS_CHANGED, (p) => this.onDiamondsChanged(p), { owner: 'garden' });
+        b.on(EVENTS.SEED_PURCHASED, () => this.refreshSeedCards(), { owner: 'garden' });
+    }
+
+    /** HUD reaction to a diamond balance change published by the economy. */
+    onDiamondsChanged({ delta = 0 } = {}) {
+        this.updateHud();
+        this.refreshSeedCards();
+        if (!this.stoneValue) return;
+        this.tweens.killTweensOf(this.stoneValue);
+        this.stoneValue.setScale(1);
+        this.tweens.add({
+            targets: this.stoneValue,
+            scale: { from: delta < 0 ? 0.86 : 1.22, to: 1 },
+            duration: 320,
+            ease: 'Back.easeOut',
+        });
+        this.stoneValue.setColor(delta < 0 ? '#ffb0b0' : '#dfffe0');
+        this.time.delayedCall(420, () => this.stoneValue?.setColor('#e8d4ff'));
     }
 
     /** Tear every system down with the scene (bus listeners included). */
@@ -275,6 +307,7 @@ export default class GardenScene extends Phaser.Scene {
         this.codexModal?.destroy();
         this.weatherView?.destroy();
         this.alchemy?.unbind();
+        this.economy?.unbind();
         this.codex?.unbind();
         this.weather?.unbind();
         this.bus?.clear();
@@ -914,6 +947,13 @@ export default class GardenScene extends Phaser.Scene {
         }
     }
 
+    /** The soil tile under a stage-space point, or null when off the grid. */
+    tileAt(x, y) {
+        const { gridX: c, gridY: r } = IsoMath.screenToGrid(x, y, ORIGIN.x, ORIGIN.y);
+        if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return null;
+        return this.tiles[r]?.[c] ?? null;
+    }
+
     /** True when a full-screen overlay (drawer / dialog / codex / alchemy / fishing / beast / ad) is up. */
     uiBlocked() {
         return !!(this.drawerOpen || this.dialogVisible || this.adWatching || this.codexModal?.isOpen() || this.fishingModal?.isOpen() || this.alchemyModal?.isOpen() || this.beastModal?.isOpen());
@@ -986,8 +1026,8 @@ export default class GardenScene extends Phaser.Scene {
 
     hoverTile(tile, on) {
         const data = tile.gridData;
-        const canPlant = this.selectedSeed && data.state === STATE.EMPTY;
-        const canHarvest = data.state === STATE.BLOOMING;
+        const canPlant = this.activeTool === TOOL.SEED && this.selectedSeed && data.state === STATE.EMPTY;
+        const canHarvest = this.activeTool !== TOOL.SEED && data.state === STATE.BLOOMING;
         if (on && canPlant) {
             this.tileHighlight.setVisible(true).setPosition(tile.x, tile.y).setAlpha(0.9);
             tile.setTint(0xbfe8ff);
@@ -1004,7 +1044,37 @@ export default class GardenScene extends Phaser.Scene {
         if (this.uiBlocked()) return;
         this.audio.ensure();
         const data = tile.gridData;
-        // If blooming, harvest it
+
+        /* ---- SICKLE (Thu Hoạch): harvest mature plants ONLY, then stop. ----
+           Never falls through to planting, never re-seeds the cleared plot. */
+        if (this.activeTool === TOOL.SICKLE) {
+            if (data.state === STATE.BLOOMING) {
+                this.harvestTile(tile);
+            } else {
+                this.tweens.add({ targets: tile, scale: { from: 1.0, to: 1.05 }, yoyo: true, duration: 90 });
+                this.audio.click(0);
+                this.flashHint(data.state === STATE.EMPTY
+                    ? 'Liềm chỉ thu hoạch — chọn hạt giống để gieo vào ô trống ✧'
+                    : 'Hoa chưa nở — tưới nước rồi quay lại thu hoạch ✧');
+            }
+            return;
+        }
+
+        /* ---- SEED (gieo hạt): plant on EMPTY plots ONLY. ---- */
+        if (this.activeTool === TOOL.SEED && this.selectedSeed) {
+            if (data.state === STATE.EMPTY) {
+                this.tryPlantSeed(tile);
+            } else if (data.state === STATE.BLOOMING) {
+                this.audio.click(0);
+                this.flashHint('Ô này đã nở hoa — dùng Liềm Thu Hoạch ✦ để thu hoạch');
+            } else {
+                this.tweens.add({ targets: tile, scale: { from: 1.0, to: 1.06 }, yoyo: true, duration: 90 });
+                this.audio.click();
+            }
+            return;
+        }
+
+        /* ---- NONE: a tap on a bloom is a quick single harvest; nothing is planted. ---- */
         if (data.state === STATE.BLOOMING) {
             this.harvestTile(tile);
             return;
@@ -1014,11 +1084,67 @@ export default class GardenScene extends Phaser.Scene {
             this.audio.click();
             return;
         }
-        if (!this.selectedSeed) {
-            this.flashHint('Hãy mở Ngăn Hạt Giống và chọn một loài hoa ✦');
-            return;
+        this.flashHint('Hãy mở Ngăn Hạt Giống và chọn một loài hoa ✦');
+    }
+
+    /**
+     * Economy gate in front of plantSeed(): premium seeds are consumed from
+     * the inventory, and when the packet is empty one is bought on the spot
+     * (diamonds deducted by the economy, which announces DIAMONDS_CHANGED).
+     * If the gardener cannot afford it, a notice is shown and NOTHING is planted.
+     */
+    tryPlantSeed(tile) {
+        const seed = this.selectedSeed;
+        if (!seed || tile.gridData.state !== STATE.EMPTY) return false;
+        if (!this.economy.consumeSeed(seed.id)) {
+            const cost = this.economy.getSeedCost(seed.id);
+            const buy = this.economy.purchaseSeed(seed.id);
+            if (!buy.success) {
+                this.audio.click(0);
+                this.showNotice({
+                    title: 'Thiếu Đá Linh Khí',
+                    message: `${seed.name} cần ${cost} 💎 mỗi hạt — hiện có ${this.economy.spiritStones} 💎.\nThu hoạch thêm hoa hoặc xem quảng cáo để nhận Đá Linh Khí.`,
+                    tone: 'warn',
+                });
+                return false;
+            }
+            this.economy.consumeSeed(seed.id);
+            this.flashHint(`Đã mua 1 hạt ${seed.name} (-${cost} 💎) và gieo ngay ✦`);
         }
         this.plantSeed(tile);
+        this.refreshSeedCards();
+        return true;
+    }
+
+    /* ============================ TOOLS ============================ */
+    /** Switch the active plot tool (SEED / SICKLE / NONE) and refresh chrome. */
+    setTool(tool) {
+        const next = Object.values(TOOL).includes(tool) ? tool : TOOL.NONE;
+        this.activeTool = next;
+        if (next !== TOOL.SEED) this.selectedSeed = null;
+        this.harvestAllBtn?.setActive?.(next === TOOL.SICKLE);
+        this.tileHighlight?.setVisible(false);
+        if (next === TOOL.SICKLE) this.showToolChip('icon_sickle', 'Liềm Thu Hoạch');
+        else if (next === TOOL.NONE) this.hideChip();
+        this.updateHint();
+        return next;
+    }
+
+    /**
+     * Sickle button: arm the SICKLE tool and reap every mature bloom now.
+     * A second tap with nothing left to harvest puts the sickle away.
+     */
+    onSickleButton() {
+        this.audio.ensure();
+        const blooming = this.tiles.flat().filter((t) => t.gridData.state === STATE.BLOOMING).length;
+        if (this.activeTool === TOOL.SICKLE && blooming === 0) {
+            this.audio.click();
+            this.setTool(TOOL.NONE);
+            return;
+        }
+        this.setTool(TOOL.SICKLE);
+        if (blooming > 0) this.harvestAll();
+        else this.flashHint('Liềm đã sẵn sàng — chạm hoặc vuốt qua hoa đã nở để thu hoạch ✦');
     }
 
     /* ============================ HARVEST (NEW) ============================ */
@@ -1285,17 +1411,59 @@ export default class GardenScene extends Phaser.Scene {
             align: 'center', wordWrap: { width: w - 20 }, fontStyle: 'bold',
         }).setOrigin(0.5);
         const cost = this.economy.getSeedCost(seed.id);
-        const costLabel = cost > 0 ? `${cost} 💎` : 'Miễn phí';
-        const sub = this.add.text(0, 104, `${seed.colorName} · ${costLabel}`, {
-            fontFamily: 'Georgia, serif', fontSize: '20px', color: '#b9a3dd',
+        const premium = cost > 0;
+        const costLabel = premium ? `${cost} 💎` : 'Miễn phí';
+        const sub = this.add.text(0, 88, `${seed.colorName} · ${costLabel}`, {
+            fontFamily: 'Georgia, serif', fontSize: '19px', color: '#b9a3dd',
         }).setOrigin(0.5);
+        name.setY(56);
 
-        container.add([bg, glow, flower, name, sub]);
-        const zone = this.add.zone(0, 0, w, h).setInteractive();
-        zone.on('pointerdown', () => this.selectSeed(seed));
+        // owned count (premium) / unlimited (starter) + a "Mua" button that
+        // deducts diamonds through the economy (DIAMONDS_CHANGED → HUD)
+        const owned = this.add.text(premium ? -w / 2 + 16 : 0, 110, '', {
+            fontFamily: DIALOG_FONT, fontSize: '17px', color: '#e6d8ff', fontStyle: 'bold',
+        }).setOrigin(premium ? 0 : 0.5, 0.5);
+        container.add([bg, glow, flower, name, sub, owned]);
+
+        const zone = this.add.zone(0, -14, w, h - 44).setInteractive();
+        zone.on('pointerdown', (pointer, lx, ly, event) => { event?.stopPropagation?.(); this.selectSeed(seed); });
         container.add(zone);
 
-        return { container, seed, bg, draw };
+        let buyBtn = null;
+        let buyBg = null;
+        let buyLabel = null;
+        if (premium) {
+            buyBtn = this.add.container(w / 2 - 46, 110);
+            buyBg = this.add.graphics();
+            buyLabel = this.add.text(0, 0, `+ Mua`, {
+                fontFamily: DIALOG_FONT, fontSize: '16px', color: '#fff7dd', fontStyle: 'bold',
+            }).setOrigin(0.5);
+            const buyZone = this.add.zone(0, 0, 76, 36).setInteractive({ useHandCursor: true });
+            buyZone.on('pointerdown', (pointer, lx, ly, event) => { event?.stopPropagation?.(); this.buySeed(seed); });
+            buyBtn.add([buyBg, buyLabel, buyZone]);
+            container.add(buyBtn);
+        }
+
+        const refresh = () => {
+            const n = this.economy.getInventoryCount(seed.id);
+            if (!premium) {
+                owned.setText('∞ không giới hạn');
+                return;
+            }
+            const affordable = this.economy.canAfford(cost);
+            owned.setText(`Sở hữu: ${n}`).setColor(n > 0 ? '#dfffe0' : '#ffb0b0');
+            if (buyBg) {
+                buyBg.clear();
+                buyBg.fillStyle(affordable ? 0x7a4a1e : 0x3a3050, 0.98);
+                buyBg.lineStyle(2, affordable ? 0xffe3a0 : 0x6a5a80, 1);
+                buyBg.fillRoundedRect(-36, -17, 72, 34, 12);
+                buyBg.strokeRoundedRect(-36, -17, 72, 34, 12);
+                buyLabel.setColor(affordable ? '#fff7dd' : '#9a8cb0');
+            }
+        };
+        refresh();
+
+        return { container, seed, bg, draw, refresh, owned, buyBtn };
     }
 
     openDrawer() {
@@ -1366,45 +1534,108 @@ export default class GardenScene extends Phaser.Scene {
         });
     }
 
+    /**
+     * Pick a seed from the drawer. Premium seeds you do not own yet are bought
+     * right here (diamonds deducted, DIAMONDS_CHANGED published); if the
+     * purchase fails nothing is selected and a notice explains why.
+     */
     selectSeed(seed) {
         this.audio.ensure();
         this.audio.click();
+        if (!this.economy.isFreeSeed(seed.id) && this.economy.getInventoryCount(seed.id) <= 0) {
+            const buy = this.economy.purchaseSeed(seed.id);
+            if (!buy.success) {
+                this.showNotice({
+                    title: 'Thiếu Đá Linh Khí',
+                    message: `${seed.name} giá ${buy.cost} 💎 — hiện có ${buy.have ?? this.economy.spiritStones} 💎.\nThu hoạch hoa hoặc xem quảng cáo để tích lũy thêm.`,
+                    tone: 'warn',
+                });
+                this.refreshSeedCards();
+                return false;
+            }
+            this.flashHint(`Đã mua ${seed.name} (-${buy.cost} 💎) ✦`);
+        }
         this.selectedSeed = seed;
+        this.activeTool = TOOL.SEED;
+        this.harvestAllBtn?.setActive?.(false);
         this.seedCards.forEach((c) => c.draw(c.seed.id === seed.id));
+        this.refreshSeedCards();
         this.time.delayedCall(200, () => this.closeDrawer());
         this.showSelectedChip(seed);
         this.updateHint();
+        return true;
+    }
+
+    /** Buy one more packet of a premium seed from its drawer card. */
+    buySeed(seed) {
+        this.audio.ensure();
+        const buy = this.economy.purchaseSeed(seed.id);
+        if (!buy.success) {
+            this.audio.click(0);
+            this.showNotice({
+                title: 'Thiếu Đá Linh Khí',
+                message: `${seed.name} giá ${buy.cost} 💎 — hiện có ${buy.have ?? this.economy.spiritStones} 💎.`,
+                tone: 'warn',
+            });
+            return buy;
+        }
+        this.audio.chime(1046.5, { gain: 0.07 });
+        this.flashHint(buy.cost > 0 ? `Đã mua ${seed.name} (-${buy.cost} 💎) · sở hữu ${buy.owned} ✦` : `Nhận ${seed.name} miễn phí ✦`);
+        this.refreshSeedCards();
+        return buy;
+    }
+
+    /** Re-read owned counts + affordability on every drawer card. */
+    refreshSeedCards() {
+        if (!this.seedCards) return;
+        for (const card of this.seedCards) card.refresh?.();
     }
 
     showSelectedChip(seed) {
-        this.chipIcon.setTexture(seed.sprite_key);
-        this.chipText.setText(`${seed.name}`);
+        this.showToolChip(seed.sprite_key, seed.name, 74);
+    }
+
+    /** Bottom chip naming the active tool (seed flower or the sickle). */
+    showToolChip(textureKey, label, size = 74) {
+        if (!this.selectedChip) return;
+        if (this.textures.exists(textureKey)) this.chipIcon.setTexture(textureKey).setDisplaySize(size, size);
+        this.chipText.setText(label);
+        this.tweens.killTweensOf(this.selectedChip);
         this.selectedChip.setVisible(true).setAlpha(0).setScale(0.8);
         this.tweens.add({
             targets: this.selectedChip, alpha: 1, scale: 1, duration: 280, ease: 'Back.easeOut',
         });
     }
 
-    clearSelection() {
-        this.selectedSeed = null;
-        this.audio.click();
+    hideChip() {
+        if (!this.selectedChip || !this.selectedChip.visible) return;
+        this.tweens.killTweensOf(this.selectedChip);
         this.tweens.add({
             targets: this.selectedChip, alpha: 0, scale: 0.8, duration: 180,
             onComplete: () => this.selectedChip.setVisible(false),
         });
-        this.updateHint();
+    }
+
+    /** ✕ on the chip: drop the seed / put the sickle away. */
+    clearSelection() {
+        this.audio.click();
+        this.setTool(TOOL.NONE);
     }
 
     /* ============================ HUD ============================ */
     createHud() {
-        this.add.text(40, 44, 'HOA VIÊN TIÊN CẢNH', {
+        // Title block sits SAFE_TOP (30px) lower so a phone notch / status bar
+        // never overlaps "HOA VIÊN TIÊN CẢNH" (index.html also pads the shell
+        // with env(safe-area-inset-top) for devices that report one).
+        this.safeTop = SAFE_TOP;
+        this.hudTitle = this.add.text(40, 44 + SAFE_TOP, 'HOA VIÊN TIÊN CẢNH', {
             fontFamily: 'Georgia, serif', fontSize: '46px', color: '#ffe9c4', fontStyle: 'bold',
             stroke: '#3a1c5e', strokeThickness: 8,
-        });
-        this.add.text(44, 102, 'Floral Manor · Cổ Phong Garden', {
+        }).setDepth(D.HUD);
+        this.hudSubtitle = this.add.text(44, 102 + SAFE_TOP, 'Floral Manor · Cổ Phong Garden', {
             fontFamily: 'Georgia, serif', fontSize: '24px', color: '#c9b2f0',
             stroke: '#1b1140', strokeThickness: 5,
-        });
+        }).setDepth(D.HUD);
 
         // Harmony badge
         const hud = this.add.container(860, 72).setDepth(D.HUD);
@@ -1448,8 +1679,13 @@ export default class GardenScene extends Phaser.Scene {
     }
 
     updateHint() {
-        if (this.selectedSeed && !this.drawerOpen) {
-            this.hintText.setText('✨ Đã chọn: ' + this.selectedSeed.name + ' — chạm/kéo vào ô đất để gieo · vuốt qua hoa nở để thu hoạch');
+        if (!this.hintText) return;
+        if (this.activeTool === TOOL.SICKLE && !this.drawerOpen) {
+            this.hintText.setText('🌾 Liềm Thu Hoạch — chạm/vuốt qua hoa đã nở để thu hoạch · ✕ để cất liềm');
+            this.hintText.setColor('#ffe9a8');
+            this.hintBg.setSize(1000, 52);
+        } else if (this.activeTool === TOOL.SEED && this.selectedSeed && !this.drawerOpen) {
+            this.hintText.setText('✨ Đã chọn: ' + this.selectedSeed.name + ' — chạm/kéo vào ô đất trống để gieo · Liềm ✦ để thu hoạch');
             this.hintText.setColor('#ffe9a8');
             this.hintBg.setSize(1020, 52);
         } else if (this.drawerOpen) {
@@ -1491,16 +1727,25 @@ export default class GardenScene extends Phaser.Scene {
         const inner = this.add.container(0, 0);
 
         const ring = this.add.graphics();
+        let armed = false; // "active tool" state (e.g. the sickle is in hand)
         const drawRing = (hover) => {
             ring.clear();
+            if (armed) {
+                ring.lineStyle(6, C.goldLight, 0.55);
+                ring.strokeCircle(0, 0, BTN_VISUAL_RADIUS + 8);
+            }
             ring.fillStyle(baseColor, 0.96);
-            ring.lineStyle(4, hover ? C.goldLight : hoverStroke, 1);
+            ring.lineStyle(4, hover || armed ? C.goldLight : hoverStroke, 1);
             ring.fillCircle(0, 0, BTN_VISUAL_RADIUS);
             ring.strokeCircle(0, 0, BTN_VISUAL_RADIUS);
             ring.fillStyle(innerColor, 0.8);
             ring.fillCircle(0, 0, BTN_INNER_RADIUS);
         };
         drawRing(false);
+        const setActive = (on) => {
+            armed = !!on;
+            drawRing(false);
+        };
 
         const icon = this.add.image(0, -5, iconKey).setDisplaySize(iconW, iconH);
         const text = this.add.text(0, BTN_VISUAL_RADIUS + 20, label, {
@@ -1547,7 +1792,7 @@ export default class GardenScene extends Phaser.Scene {
             delay: phase * 260,
         });
 
-        return { outer, inner, zone, ring, label: text, radius: BTN_VISUAL_RADIUS, hitRadius: TOUCH_ZONE_RADIUS, press, release };
+        return { outer, inner, zone, ring, label: text, radius: BTN_VISUAL_RADIUS, hitRadius: TOUCH_ZONE_RADIUS, press, release, setActive, isActive: () => armed };
     }
 
     createActionBar() {
@@ -1572,7 +1817,7 @@ export default class GardenScene extends Phaser.Scene {
                 iconKey: 'icon_sickle', iconW: 114, iconH: 99,
                 label: 'Thu Hoạch ✦', labelColor: '#ffe9a8', labelStroke: '#3a2810',
                 phase: 1,
-                onTap: () => this.harvestAll(),
+                onTap: () => this.onSickleButton(),
             }),
             // --- Water can (right) ---
             this.makeActionButton({
@@ -1626,21 +1871,127 @@ export default class GardenScene extends Phaser.Scene {
         const vipIcon = this.add.image(0, 0, 'icon_water_bucket').setDisplaySize(180, 180);
         vip.add([vipGlow, vipIcon]);
 
-        const grayBtn = this.makeModalButton(W / 2, 1072, 'Tưới Ngay (Miễn Phí)', false);
-        const goldBtn = this.makeModalButton(W / 2, 1152, '▶ Xem Quảng Cáo · +3 Hòa Hợp', true);
-        goldBtn.zone.on('pointerdown', () => this.watchAd());
-        grayBtn.zone.on('pointerdown', () => this.closeModal(true));
+        const grayBtn = this.makeModalButton(W / 2, 1072, 'Tưới Ngay · 1 💎', false);
+        const goldBtn = this.makeModalButton(W / 2, 1152, '▶ Xem Quảng Cáo · Miễn phí +3 Hòa Hợp', true);
+        goldBtn.zone.on('pointerdown', (p, lx, ly, e) => { e?.stopPropagation?.(); this.watchAd(); });
+        grayBtn.zone.on('pointerdown', (p, lx, ly, e) => { e?.stopPropagation?.(); this.quickWater(); });
+        this.quickWaterBtn = grayBtn;
         const closeX = this.add.text(W / 2 + 380, 600, '✕', {
             fontFamily: 'Arial', fontSize: '42px', color: '#ffb0b0',
         }).setOrigin(0.5).setInteractive();
-        closeX.on('pointerdown', () => this.closeModal(false));
+        closeX.on('pointerdown', (p, lx, ly, e) => { e?.stopPropagation?.(); this.closeModal(false); });
+        // panel shield: taps inside the card never reach the dim
+        const shield = this.add.zone(W / 2, 870, 820, 620).setInteractive();
+        shield.on('pointerdown', (p, lx, ly, e) => e?.stopPropagation?.());
+        dim.on('pointerdown', (p, lx, ly, e) => { e?.stopPropagation?.(); if (!this.adWatching) this.closeModal(false); });
 
         this.adTimerText = this.add.text(W / 2, 830, '', {
             fontFamily: 'Georgia, serif', fontSize: '38px', color: '#aef4ff', fontStyle: 'bold',
             stroke: '#0a2830', strokeThickness: 8,
         }).setOrigin(0.5);
 
-        this.modal.add([dim, panel, title, desc, vip, grayBtn.container, goldBtn.container, closeX, this.adTimerText]);
+        this.modal.add([dim, panel, shield, title, desc, vip, grayBtn.container, goldBtn.container, closeX, this.adTimerText]);
+    }
+
+    /** Plots a watering pass would actually grow (planted, not yet blooming). */
+    getWaterablePlots() {
+        return this.tiles.flat().filter((t) => t.gridData.state === STATE.PLANTED || t.gridData.state === STATE.GROWING);
+    }
+
+    /**
+     * Instant quick-water (fast-forward growth) — a PREMIUM action.
+     * Costs 1–2 Đá Linh Khí depending on the batch size; when the gardener
+     * cannot afford it a notice is shown and nothing grows. The rewarded ad,
+     * spring rain and the Vạn Thọ elixir remain the free paths.
+     * @returns {boolean} true if the watering pass started
+     */
+    quickWater() {
+        this.audio.ensure();
+        if (this.watering) {
+            this.flashHint('Đang tưới — chờ đợt tưới hiện tại kết thúc ✧');
+            return false;
+        }
+        const plots = this.getWaterablePlots();
+        if (!plots.length) {
+            this.audio.click();
+            this.closeModal(false);
+            this.flashHint('Không có mầm nào cần tưới ✧');
+            return false;
+        }
+        const cost = this.economy.getQuickWaterCost(plots.length);
+        if (!this.economy.canAfford(cost)) {
+            this.audio.click(0);
+            this.showNotice({
+                title: 'Thiếu Đá Linh Khí',
+                message: `Tưới nhanh ${plots.length} ô cần ${cost} 💎 — hiện có ${this.economy.spiritStones} 💎.\nXem quảng cáo để tưới miễn phí, hoặc thu hoạch hoa để nhận thêm Đá Linh Khí.`,
+                tone: 'warn',
+            });
+            return false;
+        }
+        const pay = this.economy.payQuickWater(plots.length);
+        if (!pay.success) {
+            this.showNotice({ title: 'Thiếu Đá Linh Khí', message: pay.message, tone: 'warn' });
+            return false;
+        }
+        this.closeModal(false);
+        this.waterAll('quick-water');
+        this.flashHint(`Tưới nhanh ${plots.length} ô · -${pay.cost} 💎 Đá Linh Khí ✦`);
+        return true;
+    }
+
+    /* ============================ NOTICE DIALOG ============================
+       Small centred card (above every modal) for economy refusals such as
+       "not enough Đá Linh Khí". Tap anywhere on it or wait to dismiss.       */
+    showNotice({ title = 'Thông báo', message = '', tone = 'info', durationMs = 3600 } = {}) {
+        this.hideNotice();
+        const warn = tone === 'warn';
+        const card = this.add.container(W / 2, 940).setDepth(D.TOAST + 5).setAlpha(0).setScale(0.9);
+        const g = this.add.graphics();
+        g.fillStyle(0x121016, 0.98);
+        g.lineStyle(4, warn ? 0xffb0b0 : C.gold, 1);
+        g.fillRoundedRect(-380, -170, 760, 340, 26);
+        g.strokeRoundedRect(-380, -170, 760, 340, 26);
+        g.lineStyle(2, C.goldDim, 0.7);
+        g.strokeRoundedRect(-364, -154, 728, 308, 20);
+        const icon = this.add.image(-300, -100, 'icon_spirit_stone').setDisplaySize(64, 64);
+        const t = this.add.text(-250, -100, title, {
+            fontFamily: DIALOG_FONT, fontSize: '32px', color: warn ? '#ffd0b0' : '#ffe9a8', fontStyle: 'bold',
+            stroke: '#3a1c5e', strokeThickness: 5,
+        }).setOrigin(0, 0.5);
+        const m = this.add.text(0, 6, message, {
+            fontFamily: DIALOG_FONT, fontSize: '23px', color: '#f8ead0', align: 'center',
+            wordWrap: { width: 680 }, lineSpacing: 6,
+        }).setOrigin(0.5);
+        const okBg = this.add.graphics();
+        okBg.fillStyle(0x7a4a1e, 0.98).lineStyle(3, 0xffe3a0, 1);
+        okBg.fillRoundedRect(-110, 108, 220, 46, 23).strokeRoundedRect(-110, 108, 220, 46, 23);
+        const ok = this.add.text(0, 131, 'Đã hiểu', {
+            fontFamily: DIALOG_FONT, fontSize: '22px', color: '#fff7dd', fontStyle: 'bold',
+        }).setOrigin(0.5);
+        const zone = this.add.zone(0, 0, 760, 340).setInteractive();
+        zone.on('pointerdown', (p, lx, ly, e) => { e?.stopPropagation?.(); this.hideNotice(); });
+        card.add([g, icon, t, m, okBg, ok, zone]);
+        this.notice = card;
+        this.noticeTitle = title;
+        this.noticeText = `${title} — ${message}`;
+        this.tweens.add({ targets: card, alpha: 1, scale: 1, duration: 240, ease: 'Back.easeOut' });
+        this.audio?.chime?.(392, { gain: 0.05 });
+        this.noticeTimer?.remove();
+        this.noticeTimer = this.time.delayedCall(durationMs, () => this.hideNotice());
+        return card;
+    }
+
+    hideNotice() {
+        this.noticeTimer?.remove();
+        this.noticeTimer = null;
+        const card = this.notice;
+        if (!card) return;
+        this.notice = null;
+        this.tweens.add({ targets: card, alpha: 0, scale: 0.94, duration: 160, onComplete: () => card.destroy() });
+    }
+
+    isNoticeVisible() {
+        return !!this.notice;
     }
 
     makeModalButton(x, y, label, gold) {
@@ -1656,22 +2007,32 @@ export default class GardenScene extends Phaser.Scene {
         }).setOrigin(0.5);
         const zone = this.add.zone(x, y, 660, 72).setInteractive();
         container.add([g, t, zone]);
-        return { container, zone };
+        return { container, zone, label: t };
     }
 
     openModal() {
         this.audio.ensure();
         this.audio.click();
+        // price the quick-water for the current batch before showing the card
+        const n = this.getWaterablePlots().length;
+        const cost = this.economy.getQuickWaterCost(Math.max(1, n));
+        const affordable = this.economy.canAfford(cost);
+        this.quickWaterBtn?.label?.setText(`Tưới Ngay · ${cost} 💎${affordable ? '' : '  (thiếu Đá Linh Khí)'}`)
+            .setColor(affordable ? '#e6d8ff' : '#ffb0b0');
         this.modal.setVisible(true).setAlpha(0);
         this.tweens.add({ targets: this.modal, alpha: 1, duration: 200 });
     }
 
+    /**
+     * @param {boolean} waterNow  legacy flag: when true the pass is the FREE
+     *   reward path (ad / elixir) — the paid tap goes through quickWater().
+     */
     closeModal(waterNow) {
         this.tweens.add({
             targets: this.modal, alpha: 0, duration: 180,
             onComplete: () => this.modal.setVisible(false),
         });
-        if (waterNow) this.waterAll();
+        if (waterNow) this.waterAll('rewarded-ad');
     }
 
     watchAd() {
@@ -1699,7 +2060,7 @@ export default class GardenScene extends Phaser.Scene {
                         this.adWatching = false;
                         this.adTimerText.setText('');
                         this.economy.harmony += 3;
-                        this.economy.spiritStones += 2;
+                        this.economy.addDiamonds(2, 'rewarded-ad');
                         this.updateHud();
                         this.closeModal(true);
                     });
@@ -1717,7 +2078,10 @@ export default class GardenScene extends Phaser.Scene {
             this.gestureActive = true;
             this.gestureStartX = pointer.x;
             this.gestureStartY = pointer.y;
-            this.lastDragTile = null;
+            // Remember the plot under the finger: the TAP already handled it
+            // (handleTileClick), so touch jitter on the same plot must never
+            // re-process it — that was the "harvest → instant re-seed" bug.
+            this.lastDragTile = this.tileAt(pointer.x, pointer.y);
         });
 
         this.input.on('pointermove', (pointer) => {
@@ -1744,13 +2108,14 @@ export default class GardenScene extends Phaser.Scene {
 
             const data = tile.gridData;
 
-            // Drag-to-Plant: if we have a selected seed and tile is empty
-            if (this.selectedSeed && data.state === STATE.EMPTY) {
-                this.plantSeed(tile);
-            }
-            // Swipe-to-Harvest: if tile is blooming
-            else if (data.state === STATE.BLOOMING) {
-                this.harvestTile(tile);
+            // Tool-scoped gestures — one tool, one verb, never both:
+            if (this.activeTool === TOOL.SEED) {
+                // Drag-to-Plant: only EMPTY plots, only with a seed in hand
+                if (this.selectedSeed && data.state === STATE.EMPTY) this.tryPlantSeed(tile);
+            } else if (this.activeTool === TOOL.SICKLE) {
+                // Swipe-to-Harvest: only BLOOMING plots; the plot is cleared and
+                // left EMPTY — nothing is re-seeded behind the sickle.
+                if (data.state === STATE.BLOOMING) this.harvestTile(tile);
             }
         });
 

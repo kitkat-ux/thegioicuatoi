@@ -1,9 +1,18 @@
 /**
  * BeastModal — Vườn Linh Thú / Spirit Beast Sanctuary UI.
  *
- * Guofeng modal displaying beast pen/habitat slots with interactive
- * "Cho Ăn" (Feed) and "Xoa Đầu" (Pet) buttons, affinity progress bar,
- * and passive buff stats display.
+ * Dark Guofeng overlay (ink #121016 + gold frame) with:
+ *  - a TAB ROW (one pill per beast) + ‹ › carousel arrows + swipe on the stage,
+ *    so Cửu Vĩ Bạch Hồ and Ngọc Thỏ are shown ONE AT A TIME instead of being
+ *    stacked at the same coordinates;
+ *  - a single stage that shows only the selected beast on its lotus nest;
+ *  - affinity bar, "Cho Ăn" (Feed) / "Xoa Đầu" (Pet) buttons with cooldowns,
+ *    and the passive-buff card.
+ *
+ * Input rules (mobile fix): every interactive element inside the panel calls
+ * `event.stopPropagation()` and an invisible panel shield sits between the
+ * panel art and the widgets, so a tap inside the modal can never reach the
+ * backdrop and auto-close it. Only a tap OUTSIDE the panel closes it.
  *
  * The widget owns presentation only. Beast state is driven externally via
  * props so the modal stays decoupled from GardenScene / EconomySystem.
@@ -12,13 +21,42 @@ import Phaser from 'phaser';
 import { LAYERS } from '../core/Layers.js';
 import { DIALOG_FONT } from '../systems/DialogSystem.js';
 import { BEAST_ASSETS } from '../data/BeastAssetManifest.js';
+import { bindBackdropClose, createPanelShield, guarded, localRectToWorld } from './modalInput.js';
 
-const W = 880;
-const H = 1100;
-const GOLD = 0xdfb15b;
-const INK = 0x25143b;
-const JADE = 0x4fd1a5;
-const RUBY = 0xe54545;
+const STAGE_W = 1080;
+const STAGE_H = 1920;
+const W = 900;
+const H = 1180;
+
+/* Dark Guofeng palette — same family as the alchemy furnace + codex chrome. */
+export const BEAST_THEME = {
+    bg: 0x121016,          // ink panel (spec: #121016)
+    bgHex: '#121016',
+    card: 0x1c1724,        // raised card / tab surface
+    cardDeep: 0x0d0a12,
+    gold: 0xdfb15b,        // frame + active accents
+    goldLight: 0xffe3a0,
+    goldDim: 0x8a6a3a,
+    jade: 0x2f9f7f,
+    ruby: 0xb23a4a,
+    plum: 0x8a5fa8,
+    text: '#f8ead0',       // primary — warm parchment on ink
+    textGold: '#ffe9a8',
+    textMuted: '#b9a3dd',
+    textSoft: '#d8c3f2',
+    stroke: '#0d0a12',
+};
+
+const RARITY_STYLE = {
+    legendary: { bg: '#dfb15b', color: '#2a1a08', label: 'HUYỀN THOẠI' },
+    rare: { bg: '#8a5fa8', color: '#fff7ee', label: 'HIẾM' },
+    uncommon: { bg: '#2f9f7f', color: '#f3fff8', label: 'ÍT GẶP' },
+    common: { bg: '#4a4358', color: '#f3eefc', label: 'THƯỜNG' },
+};
+
+const FEED_CD = 5000;
+const PET_CD = 3000;
+const SWIPE_PX = 60;
 
 /** Default beast data used when no external provider is wired yet. */
 const DEFAULT_BEASTS = [
@@ -46,6 +84,8 @@ const DEFAULT_BEASTS = [
     },
 ];
 
+const text = (scene, x, y, str, style = {}) => scene.add.text(x, y, str, { fontFamily: DIALOG_FONT, ...style });
+
 export class BeastModal {
     constructor(
         scene,
@@ -68,291 +108,421 @@ export class BeastModal {
         this.selectedIndex = 0;
         this.nodes = [];
         this.disposers = [];
+        this.tabs = [];
+        this.stageCards = [];
+        this._switching = false;
+        this._cooldownTimer = null;
     }
 
     /* ---------- lifecycle ---------- */
 
     create() {
         const s = this.scene;
+        const T = BEAST_THEME;
 
-        this.root = s.add.container(540, 960).setDepth(LAYERS.BEAST).setVisible(false);
+        this.root = s.add.container(STAGE_W / 2, STAGE_H / 2).setDepth(LAYERS.BEAST).setVisible(false);
 
-        /* backdrop */
-        const shade = s.add.rectangle(0, 0, 1080, 1920, 0x110a22, 0.76).setInteractive();
+        /* backdrop — tap OUTSIDE the panel closes; inside taps are swallowed */
+        const shade = s.add.rectangle(0, 0, STAGE_W, STAGE_H, 0x05030c, 0.8).setInteractive();
+        bindBackdropClose(shade, () => this.getPanelWorldRect(), () => this.close());
+        this.dim = shade;
 
-        /* panel frame */
+        /* panel frame — ink + gold (dark Guofeng) */
         const panel = s.add.graphics();
-        panel.fillStyle(0xf4e5c2, 1).fillRoundedRect(-W / 2, -H / 2, W, H, 26);
-        panel.lineStyle(8, GOLD, 1).strokeRoundedRect(-W / 2, -H / 2, W, H, 26);
-        panel.lineStyle(2, 0x8a5fa8, 0.8).strokeRoundedRect(-W / 2 + 18, -H / 2 + 18, W - 36, H - 36, 18);
+        panel.fillStyle(T.bg, 0.985).fillRoundedRect(-W / 2, -H / 2, W, H, 28);
+        panel.lineStyle(6, T.gold, 1).strokeRoundedRect(-W / 2, -H / 2, W, H, 28);
+        panel.lineStyle(2, T.goldDim, 0.7).strokeRoundedRect(-W / 2 + 16, -H / 2 + 16, W - 32, H - 32, 20);
+        // corner ornaments (small gold diamonds)
+        panel.fillStyle(T.gold, 0.9);
+        for (const [cx, cy] of [[-W / 2 + 34, -H / 2 + 34], [W / 2 - 34, -H / 2 + 34], [-W / 2 + 34, H / 2 - 34], [W / 2 - 34, H / 2 - 34]]) {
+            panel.fillTriangle(cx, cy - 9, cx + 9, cy, cx, cy + 9);
+            panel.fillTriangle(cx, cy - 9, cx - 9, cy, cx, cy + 9);
+        }
 
-        /* title */
-        this.title = s
-            .add.text(0, -H / 2 + 58, 'Vườn Linh Thú', {
-                fontFamily: DIALOG_FONT,
-                fontSize: '42px',
-                color: '#4b2864',
-                fontStyle: 'bold',
-            })
-            .setOrigin(0.5);
+        /* panel shield: captures every inside pointerdown → stopPropagation */
+        this.panelShield = createPanelShield(s, 0, 0, W, H);
 
-        this.subtitle = s
-            .add.text(0, -H / 2 + 108, 'Thuần dưỡng · Nâng cấp · Hưởng thụ linh khí thụ động', {
-                fontFamily: DIALOG_FONT,
-                fontSize: '22px',
-                color: '#795b49',
-            })
-            .setOrigin(0.5);
+        /* title block */
+        this.title = text(s, 0, -H / 2 + 60, 'VƯỜN LINH THÚ', {
+            fontSize: '44px', color: T.textGold, fontStyle: 'bold',
+            stroke: '#3a2810', strokeThickness: 7,
+        }).setOrigin(0.5);
+        this.subtitle = text(s, 0, -H / 2 + 108, 'Thuần dưỡng · Nâng cấp · Hưởng linh khí thụ động', {
+            fontSize: '21px', color: T.textMuted,
+        }).setOrigin(0.5);
 
         /* close */
-        this.closeButton = s
-            .add.text(W / 2 - 48, -H / 2 + 35, '×', {
-                fontSize: '44px',
-                color: '#5d356f',
-            })
-            .setOrigin(0.5)
-            .setInteractive({ useHandCursor: true });
-        this.closeButton.on('pointerdown', () => this.close());
+        this.closeButton = text(s, W / 2 - 50, -H / 2 + 44, '✕', {
+            fontFamily: 'Arial', fontSize: '40px', color: '#ffb0b0', fontStyle: 'bold',
+        }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+        this.closeButton.on('pointerdown', guarded(() => this.close()));
 
-        /* beast slots row */
-        this.slotContainer = s.add.container(0, -H / 2 + 200);
-        this.slots = [];
-        this.beasts.forEach((beast, i) => {
-            const slot = this.makeBeastSlot(i, beast);
-            this.slots.push(slot);
-            this.slotContainer.add(slot);
+        /* tab row (one pill per beast) — replaces the stacked slot layout */
+        this.tabRowY = -H / 2 + 172;
+        this.tabRow = s.add.container(0, this.tabRowY);
+        this.tabs = this.beasts.map((beast, i) => this.makeTab(i, beast));
+        this.tabRow.add(this.tabs);
+        this.slots = this.tabs; // backwards-compatible alias
+
+        /* stage: the selected beast on its nest (only ONE card visible) */
+        this.stageY = -H / 2 + 420;
+
+        /* carousel arrows (need stageY — they flank the stage vertically centred) */
+        this.prevArrow = this.makeArrow(-W / 2 + 62, '‹', () => this.step(-1));
+        this.nextArrow = this.makeArrow(W / 2 - 62, '›', () => this.step(1));
+        this.stage = s.add.container(0, this.stageY);
+        const stageBg = s.add.graphics();
+        stageBg.fillStyle(T.cardDeep, 0.9).fillRoundedRect(-330, -190, 660, 380, 22);
+        stageBg.lineStyle(2, T.goldDim, 0.8).strokeRoundedRect(-330, -190, 660, 380, 22);
+        this.stage.add(stageBg);
+        // soft lantern glow behind the beast
+        if (s.textures.exists('glow')) {
+            this.stageGlow = s.add.image(0, 10, 'glow').setTint(T.gold).setAlpha(0.16).setScale(2.6, 1.9);
+            this.stage.add(this.stageGlow);
+        }
+        // shared nest platform
+        const nestKey = BEAST_ASSETS.nest_platform?.key;
+        if (nestKey && s.textures.exists(nestKey)) {
+            this.nest = s.add.image(0, 120, nestKey).setDisplaySize(420, 280).setAlpha(0.95);
+            this.stage.add(this.nest);
+        }
+        // one masked-in card per beast; only the selected one is visible
+        this.stageCards = this.beasts.map((beast) => this.makeStageCard(beast));
+        this.stage.add(this.stageCards);
+        // swipe zone (guarded) — swipe left/right to change beast
+        const stageZone = s.add.zone(0, 0, 660, 380).setInteractive();
+        stageZone.on('pointerdown', (pointer, lx, ly, event) => {
+            event?.stopPropagation?.();
+            this._swipeStartX = pointer.x;
         });
+        stageZone.on('pointerup', (pointer, lx, ly, event) => {
+            event?.stopPropagation?.();
+            if (this._swipeStartX == null) return;
+            const dx = pointer.x - this._swipeStartX;
+            this._swipeStartX = null;
+            if (Math.abs(dx) >= SWIPE_PX) this.step(dx < 0 ? 1 : -1);
+        });
+        stageZone.on('pointerout', () => { this._swipeStartX = null; });
+        this.stage.add(stageZone);
+        this.stageZone = stageZone;
 
-        /* selected beast display area */
-        this.displayY = -H / 2 + 380;
-        this.beastSprite = s.add.sprite(0, this.displayY + 10, this.beasts[0]?.assetKey ?? '')
-            .setOrigin(0.5)
-            .setScale(1.2)
-            .setVisible(false);
-        this.beastName = s.add.text(0, this.displayY + 110, this.beasts[0]?.name ?? '', {
-            fontFamily: DIALOG_FONT,
-            fontSize: '30px',
-            color: '#4b2864',
-            fontStyle: 'bold',
+        /* page dots */
+        this.dots = s.add.graphics();
+        this.dotsY = this.stageY + 214;
+
+        /* name + rarity */
+        this.beastName = text(s, 0, this.stageY + 252, this.beasts[0]?.name ?? '', {
+            fontSize: '34px', color: T.textGold, fontStyle: 'bold',
+            stroke: '#3a2810', strokeThickness: 6,
         }).setOrigin(0.5);
-        this.rarityBadge = s.add.text(0, this.displayY + 148, this.beasts[0]?.rarity ?? '', {
-            fontFamily: DIALOG_FONT,
-            fontSize: '18px',
-            color: '#fff',
-            backgroundColor: '#8a5fa8',
-            padding: { left: 10, right: 10, top: 4, bottom: 4 },
+        this.rarityBadge = text(s, 0, this.stageY + 296, '', {
+            fontSize: '17px', color: '#2a1a08', fontStyle: 'bold',
+            backgroundColor: '#dfb15b',
+            padding: { left: 14, right: 14, top: 5, bottom: 5 },
         }).setOrigin(0.5);
 
         /* affinity bar */
-        const affinityY = this.displayY + 195;
-        this.affinityLabel = s
-            .add.text(-260, affinityY, 'Thân mật:', {
-                fontFamily: DIALOG_FONT,
-                fontSize: '22px',
-                color: '#3d2851',
-            })
-            .setOrigin(0, 0.5);
-        const barBg = s.add.graphics();
-        barBg.fillStyle(0xe8d9b0, 1).fillRoundedRect(-180, affinityY - 14, 360, 28, 10);
+        this.affinityY = this.stageY + 350;
+        this.affinityLabel = text(s, -300, this.affinityY, 'Thân mật', {
+            fontSize: '22px', color: T.textSoft, fontStyle: 'bold',
+        }).setOrigin(0, 0.5);
+        this.affinityBg = s.add.graphics();
+        this.affinityBg.fillStyle(0x241540, 1).fillRoundedRect(-180, this.affinityY - 15, 400, 30, 12);
+        this.affinityBg.lineStyle(2, T.goldDim, 0.9).strokeRoundedRect(-180, this.affinityY - 15, 400, 30, 12);
         this.affinityFill = s.add.graphics();
-        this.affinityText = s.add.text(0, affinityY, '', {
-            fontFamily: DIALOG_FONT,
-            fontSize: '18px',
-            color: '#fff',
-            fontStyle: 'bold',
+        this.affinityText = text(s, 20, this.affinityY, '', {
+            fontSize: '18px', color: '#ffffff', fontStyle: 'bold',
+            stroke: T.stroke, strokeThickness: 4,
         }).setOrigin(0.5);
-        this.updateAffinityBar(this.beasts[0]);
+        const heartKey = BEAST_ASSETS.affinity_heart?.key;
+        if (heartKey && s.textures.exists(heartKey)) {
+            this.affinityIcon = s.add.image(258, this.affinityY, heartKey).setDisplaySize(44, 44);
+        }
 
         /* action buttons */
-        const btnY = this.displayY + 280;
-        this.feedBtn = this.makeActionButton(-140, btnY, 'Cho Ăn', JADE, () => this.handleFeed());
-        this.petBtn = this.makeActionButton(140, btnY, 'Xoa Đầu', RUBY, () => this.handlePet());
+        this.btnY = this.stageY + 432;
+        this.feedBtn = this.makeActionButton(-150, this.btnY, 'Cho Ăn', T.jade, BEAST_ASSETS.feed_berry?.key, () => this.handleFeed());
+        this.petBtn = this.makeActionButton(150, this.btnY, 'Xoa Đầu', T.ruby, null, () => this.handlePet());
 
         /* cooldown hints */
-        this.feedCooldown = s.add.text(-140, btnY + 44, '', {
-            fontFamily: DIALOG_FONT,
-            fontSize: '16px',
-            color: '#795b49',
+        this.feedCooldown = text(s, -150, this.btnY + 48, '', { fontSize: '17px', color: T.textMuted }).setOrigin(0.5);
+        this.petCooldown = text(s, 150, this.btnY + 48, '', { fontSize: '17px', color: T.textMuted }).setOrigin(0.5);
+
+        /* passive buffs card */
+        this.buffsY = this.stageY + 520;
+        this.buffsPanel = s.add.graphics();
+        this.buffsPanel.fillStyle(T.card, 1).fillRoundedRect(-330, this.buffsY - 14, 660, 130, 16);
+        this.buffsPanel.lineStyle(2, T.goldDim, 0.8).strokeRoundedRect(-330, this.buffsY - 14, 660, 130, 16);
+        this.buffsTitle = text(s, 0, this.buffsY + 8, '✦ Linh khí thụ động', {
+            fontSize: '22px', color: '#ffd787', fontStyle: 'bold',
+            stroke: '#1b1140', strokeThickness: 4,
         }).setOrigin(0.5);
-        this.petCooldown = s.add.text(140, btnY + 44, '', {
-            fontFamily: DIALOG_FONT,
-            fontSize: '16px',
-            color: '#795b49',
+        this.buffsList = s.add.container(0, this.buffsY + 56);
+
+        /* footer hint */
+        this.footerHint = text(s, 0, H / 2 - 44, 'Chạm thẻ hoặc vuốt để đổi linh thú · chạm ngoài khung để đóng', {
+            fontSize: '17px', color: '#8f7fa8', fontStyle: 'italic',
         }).setOrigin(0.5);
 
-        /* passive buffs panel */
-        const buffsY = this.displayY + 360;
-        s.add.graphics()
-            .fillStyle(0xfff8e9, 1)
-            .lineStyle(3, 0xb89158, 0.6)
-            .fillRoundedRect(-320, buffsY - 12, 640, 120, 14)
-            .strokeRoundedRect(-320, buffsY - 12, 640, 120, 14);
-        s.add.text(0, buffsY + 4, '✦ Linh khí thụ động ', {
-            fontFamily: DIALOG_FONT,
-            fontSize: '22px',
-            color: '#633d70',
-        }).setOrigin(0.5);
-        this.buffsList = s.add.container(0, buffsY + 46);
-        this.refreshBuffs(this.beasts[0]);
-
-        /* assemble */
+        /* assemble — order matters: shade → panel → shield → widgets */
         this.root.add([
-            shade, panel, this.title, this.subtitle, this.closeButton,
-            this.slotContainer,
-            this.beastSprite, this.beastName, this.rarityBadge,
-            this.affinityLabel, this.affinityFill, this.affinityText,
+            shade, panel, this.panelShield,
+            this.title, this.subtitle, this.closeButton,
+            this.tabRow, this.prevArrow, this.nextArrow,
+            this.stage, this.dots,
+            this.beastName, this.rarityBadge,
+            this.affinityLabel, this.affinityBg, this.affinityFill, this.affinityText,
+            ...(this.affinityIcon ? [this.affinityIcon] : []),
             this.feedBtn, this.petBtn, this.feedCooldown, this.petCooldown,
-            this.buffsList,
+            this.buffsPanel, this.buffsTitle, this.buffsList,
+            this.footerHint,
         ]);
 
-        this.refreshSlots();
-        this.selectBeast(0);
+        this.selectBeast(0, { animate: false });
         return this;
     }
 
-    /* ---------- helpers ---------- */
+    /* ---------- builders ---------- */
 
-    makeBeastSlot(index, beast) {
+    /** A pill tab; the active one reads gold, the others ink. */
+    makeTab(index, beast) {
         const s = this.scene;
-        const x = -200 + index * 200;
+        const T = BEAST_THEME;
+        const n = this.beasts.length;
+        const tabW = Math.min(300, (W - 220) / Math.max(1, n) - 12);
+        const tabH = 64;
+        const totalW = n * tabW + (n - 1) * 14;
+        const x = -totalW / 2 + tabW / 2 + index * (tabW + 14);
         const container = s.add.container(x, 0);
 
-        const g = s.add.graphics();
-        g.fillStyle(0xfff8e9, 1)
-            .lineStyle(3, 0xb89158, 1)
-            .fillRoundedRect(-75, -75, 150, 150, 14)
-            .strokeRoundedRect(-75, -75, 150, 150, 14);
+        const bg = s.add.graphics();
+        const draw = (active) => {
+            bg.clear();
+            bg.fillStyle(active ? 0x3a2810 : T.card, 1);
+            bg.lineStyle(active ? 3 : 2, active ? T.goldLight : 0x5a4a6a, 1);
+            bg.fillRoundedRect(-tabW / 2, -tabH / 2, tabW, tabH, tabH / 2);
+            bg.strokeRoundedRect(-tabW / 2, -tabH / 2, tabW, tabH, tabH / 2);
+        };
+        draw(false);
 
-        const sprite = s.add.sprite(0, -10, beast.assetKey).setOrigin(0.5).setScale(0.55).setVisible(false);
-        const name = s
-            .add.text(0, 40, beast.name, {
-                fontFamily: DIALOG_FONT,
-                fontSize: '15px',
-                color: '#3d2851',
-                align: 'center',
-                wordWrap: { width: 130 },
-            })
-            .setOrigin(0.5);
+        let icon = null;
+        if (s.textures.exists(beast.assetKey)) {
+            icon = s.add.image(-tabW / 2 + 38, 0, beast.assetKey);
+            fitImage(icon, 44, 44);
+        }
+        const label = text(s, icon ? -tabW / 2 + 70 : 0, 0, beast.name, {
+            fontSize: '21px', color: T.textMuted, fontStyle: 'bold',
+            wordWrap: { width: tabW - 90 },
+        }).setOrigin(icon ? 0 : 0.5, 0.5);
 
-        const hit = s.add.rectangle(0, 0, 150, 150, 0x000000, 0)
-            .setOrigin(0.5)
-            .setInteractive({ useHandCursor: true });
-        hit.on('pointerdown', () => this.selectBeast(index));
+        const hit = s.add.zone(0, 0, tabW, tabH).setInteractive({ useHandCursor: true });
+        hit.on('pointerdown', guarded(() => this.selectBeast(index)));
+        hit.on('pointerup', guarded(() => {}));
 
-        container.add([g, sprite, name, hit]);
-        container.sprite = sprite;
-        container.nameText = name;
+        container.add([bg, ...(icon ? [icon] : []), label, hit]);
+        container.draw = draw;
+        container.label = label;
+        container.setActive = (active) => {
+            draw(active);
+            label.setColor(active ? T.textGold : T.textMuted);
+            container.setAlpha(1);
+        };
         return container;
     }
 
-    makeActionButton(x, y, label, color, handler) {
+    /** Carousel arrow button (‹ / ›). */
+    makeArrow(x, glyph, handler) {
         const s = this.scene;
+        const T = BEAST_THEME;
+        const c = s.add.container(x, this.stageY);
+        const g = s.add.graphics();
+        g.fillStyle(T.card, 1).fillCircle(0, 0, 30);
+        g.lineStyle(2, T.gold, 0.9).strokeCircle(0, 0, 30);
+        const t = text(s, 0, -3, glyph, { fontSize: '44px', color: T.textGold, fontStyle: 'bold' }).setOrigin(0.5);
+        const zone = s.add.zone(0, 0, 84, 84).setInteractive({ useHandCursor: true });
+        zone.on('pointerdown', guarded(() => {
+            s.tweens.add({ targets: c, scale: { from: 0.9, to: 1 }, duration: 160, ease: 'Back.easeOut' });
+            handler();
+        }));
+        c.add([g, t, zone]);
+        return c;
+    }
+
+    /** One card per beast inside the stage — only the selected one is visible. */
+    makeStageCard(beast) {
+        const s = this.scene;
+        const card = s.add.container(0, 0).setVisible(false);
+        if (s.textures.exists(beast.assetKey)) {
+            const sprite = s.add.image(0, 0, beast.assetKey).setOrigin(0.5, 0.5);
+            fitImage(sprite, 300, 320);
+            sprite.y = -6;
+            card.add(sprite);
+            card.sprite = sprite;
+        } else {
+            const ph = text(s, 0, 0, beast.name, { fontSize: '26px', color: BEAST_THEME.textMuted }).setOrigin(0.5);
+            card.add(ph);
+        }
+        card.beastId = beast.id;
+        return card;
+    }
+
+    makeActionButton(x, y, label, color, iconKey, handler) {
+        const s = this.scene;
+        const c = s.add.container(x, y);
         const bg = s.add.graphics();
-        bg.fillStyle(color, 1).fillRoundedRect(x - 95, y - 28, 190, 56, 22);
-        bg.lineStyle(2, 0xfff7dd, 0.6).strokeRoundedRect(x - 95, y - 28, 190, 56, 22);
-
-        const txt = s
-            .add.text(x, y, label, {
-                fontFamily: DIALOG_FONT,
-                fontSize: '26px',
-                color: '#fff7dd',
-            })
-            .setOrigin(0.5)
-            .setInteractive({ useHandCursor: true });
-
-        txt.on('pointerover', () => bg.setAlpha(0.85));
-        txt.on('pointerout', () => bg.setAlpha(1));
-        txt.on('pointerdown', handler);
-        return txt;
+        const draw = (hover) => {
+            bg.clear();
+            bg.fillStyle(color, 1).fillRoundedRect(-110, -30, 220, 60, 30);
+            bg.lineStyle(3, hover ? BEAST_THEME.goldLight : 0xfff7dd, hover ? 1 : 0.55).strokeRoundedRect(-110, -30, 220, 60, 30);
+        };
+        draw(false);
+        let icon = null;
+        if (iconKey && s.textures.exists(iconKey)) {
+            icon = s.add.image(-72, 0, iconKey);
+            fitImage(icon, 40, 40);
+        }
+        const txt = text(s, icon ? 14 : 0, 0, label, {
+            fontSize: '26px', color: '#fff7dd', fontStyle: 'bold',
+            stroke: BEAST_THEME.stroke, strokeThickness: 4,
+        }).setOrigin(0.5);
+        const zone = s.add.zone(0, 0, 240, 84).setInteractive({ useHandCursor: true });
+        zone.on('pointerover', () => draw(true));
+        zone.on('pointerout', () => draw(false));
+        zone.on('pointerdown', guarded(() => {
+            s.tweens.killTweensOf(c);
+            s.tweens.add({ targets: c, scale: { from: 0.92, to: 1 }, duration: 220, ease: 'Back.easeOut' });
+            handler();
+        }));
+        zone.on('pointerup', guarded(() => {}));
+        c.add([bg, ...(icon ? [icon] : []), txt, zone]);
+        c.labelText = txt;
+        return c;
     }
 
     /* ---------- state ---------- */
 
-    selectBeast(index) {
+    /** Move the carousel by ±1 (wraps around). */
+    step(delta) {
+        const n = this.beasts.length;
+        if (!n) return;
+        this.selectBeast((this.selectedIndex + delta + n) % n, { direction: Math.sign(delta) || 1 });
+    }
+
+    selectBeast(index, { animate = true, direction = 0 } = {}) {
         if (index < 0 || index >= this.beasts.length) return;
+        const prev = this.selectedIndex;
         this.selectedIndex = index;
         const beast = this.beasts[index];
+        const s = this.scene;
+        const dir = direction || (index > prev ? 1 : index < prev ? -1 : 0);
 
-        /* highlight slot */
-        this.slots.forEach((slot, i) => {
-            slot.alpha = i === index ? 1 : 0.6;
+        /* tabs */
+        this.tabs.forEach((tab, i) => tab.setActive(i === index));
+
+        /* stage — hide everything but the selected card (never stack) */
+        this.stageCards.forEach((card, i) => {
+            const on = i === index;
+            if (on === card.visible && !(on && animate && dir)) return;
+            if (!on) {
+                if (animate && card.visible && dir) {
+                    s.tweens.killTweensOf(card);
+                    s.tweens.add({
+                        targets: card, x: -dir * 160, alpha: 0, duration: 200, ease: 'Quad.easeIn',
+                        onComplete: () => { card.setVisible(false).setX(0).setAlpha(1); },
+                    });
+                } else {
+                    card.setVisible(false).setX(0).setAlpha(1);
+                }
+            } else {
+                s.tweens.killTweensOf(card);
+                card.setVisible(true);
+                if (animate) {
+                    card.setX(dir * 160).setAlpha(0);
+                    s.tweens.add({ targets: card, x: 0, alpha: 1, duration: 300, ease: 'Cubic.easeOut' });
+                } else {
+                    card.setX(0).setAlpha(1);
+                }
+            }
         });
+        this.drawDots();
 
-        /* update display */
+        /* info */
         this.beastName.setText(beast.name);
-        this.rarityBadge.setText(beast.rarity.toUpperCase());
+        const rs = RARITY_STYLE[beast.rarity] ?? RARITY_STYLE.common;
+        this.rarityBadge.setText(rs.label).setStyle({ backgroundColor: rs.bg, color: rs.color });
         this.updateAffinityBar(beast);
         this.refreshBuffs(beast);
         this.updateCooldowns(beast);
 
-        /* animation */
-        this.scene.tweens.add({
-            targets: this.beastName,
-            scaleX: { from: 0.8, to: 1 },
-            scaleY: { from: 0.8, to: 1 },
-            alpha: { from: 0.4, to: 1 },
-            duration: 300,
-            ease: 'Sine.easeOut',
-        });
+        if (animate) {
+            s.tweens.killTweensOf(this.beastName);
+            s.tweens.add({
+                targets: this.beastName,
+                scaleX: { from: 0.85, to: 1 }, scaleY: { from: 0.85, to: 1 }, alpha: { from: 0.4, to: 1 },
+                duration: 280, ease: 'Sine.easeOut',
+            });
+            this.audio?.click?.();
+        }
+    }
+
+    drawDots() {
+        if (!this.dots) return;
+        const n = this.beasts.length;
+        const g = this.dots;
+        g.clear();
+        const gap = 22;
+        const x0 = -((n - 1) * gap) / 2;
+        for (let i = 0; i < n; i++) {
+            const active = i === this.selectedIndex;
+            g.fillStyle(active ? BEAST_THEME.goldLight : 0x5a4a6a, 1);
+            g.fillCircle(x0 + i * gap, this.dotsY, active ? 7 : 5);
+        }
     }
 
     updateAffinityBar(beast) {
         if (!beast || !this.affinityFill) return;
         const pct = Phaser.Math.Clamp(beast.affinity / beast.affinityMax, 0, 1);
-        const barWidth = 360 * pct;
-        const barY = -this.displayY + this.displayY + 195;
-
+        const barWidth = Math.max(0, 400 * pct);
+        // colour by affinity level (chosen BEFORE drawing — the old code set it after)
+        const color = pct >= 0.8 ? 0x4fd1a5 : pct >= 0.4 ? 0xdfb15b : 0xe54545;
         this.affinityFill.clear();
-        this.affinityFill.fillStyle(0x4fd1a5, 1);
-        this.affinityFill.fillRoundedRect(-180, 195 - 14, barWidth, 28, 10);
-
+        if (barWidth > 0) {
+            this.affinityFill.fillStyle(color, 1);
+            this.affinityFill.fillRoundedRect(-180, this.affinityY - 15, Math.max(barWidth, 30), 30, 12);
+        }
         this.affinityText.setText(`${Math.floor(beast.affinity)} / ${beast.affinityMax}`);
-
-        /* tint by affinity level */
-        if (pct >= 0.8) this.affinityFill.fillStyle(0x4fd1a5, 1);
-        else if (pct >= 0.4) this.affinityFill.fillStyle(0xdfb15b, 1);
-        else this.affinityFill.fillStyle(0xe54545, 1);
     }
 
     refreshBuffs(beast) {
         if (!this.buffsList) return;
         this.buffsList.removeAll(true);
         if (!beast || !beast.buffs || !beast.buffs.length) {
-            this.buffsList.add(
-                this.scene.add.text(0, 0, 'Chưa có linh khí thụ động.', {
-                    fontFamily: DIALOG_FONT,
-                    fontSize: '20px',
-                    color: '#876e63',
-                }).setOrigin(0.5),
-            );
+            this.buffsList.add(text(this.scene, 0, 0, 'Chưa có linh khí thụ động.', {
+                fontSize: '20px', color: BEAST_THEME.textMuted,
+            }).setOrigin(0.5));
             return;
         }
         beast.buffs.forEach((buff, i) => {
-            const row = this.scene.add.text(0, i * 32, `✧  ${buff.label}`, {
-                fontFamily: DIALOG_FONT,
-                fontSize: '22px',
-                color: '#3d2851',
-            }).setOrigin(0.5);
-            this.buffsList.add(row);
+            this.buffsList.add(text(this.scene, 0, i * 32, `✧  ${buff.label}`, {
+                fontSize: '22px', color: '#e6d8ff',
+            }).setOrigin(0.5));
         });
     }
 
+    /** @deprecated kept for API compatibility — tabs redraw themselves */
     refreshSlots() {
-        this.slots.forEach((slot, i) => {
-            if (slot.sprite) slot.sprite.setVisible(true);
-        });
+        this.tabs.forEach((tab, i) => tab.setActive(i === this.selectedIndex));
     }
 
-    updateCooldowns(beast) {
+    updateCooldowns(beast = this.beasts[this.selectedIndex]) {
+        if (!beast || !this.feedCooldown) return;
         const now = Date.now();
-        const FEED_CD = 5000;
-        const PET_CD = 3000;
         const feedLeft = Math.max(0, FEED_CD - (now - beast.lastFed));
         const petLeft = Math.max(0, PET_CD - (now - beast.lastPet));
-        this.feedCooldown.setText(feedLeft > 0 ? `Chờ ${Math.ceil(feedLeft / 1000)}s` : '');
-        this.petCooldown.setText(petLeft > 0 ? `Chờ ${Math.ceil(petLeft / 1000)}s` : '');
-        this.feedBtn.setAlpha(feedLeft > 0 ? 0.5 : 1);
-        this.petBtn.setAlpha(petLeft > 0 ? 0.5 : 1);
+        this.feedCooldown.setText(feedLeft > 0 ? `Chờ ${Math.ceil(feedLeft / 1000)}s` : 'Sẵn sàng ✦');
+        this.petCooldown.setText(petLeft > 0 ? `Chờ ${Math.ceil(petLeft / 1000)}s` : 'Sẵn sàng ✦');
+        this.feedBtn.setAlpha(feedLeft > 0 ? 0.55 : 1);
+        this.petBtn.setAlpha(petLeft > 0 ? 0.55 : 1);
     }
 
     /* ---------- actions ---------- */
@@ -361,8 +531,10 @@ export class BeastModal {
         const beast = this.beasts[this.selectedIndex];
         if (!beast) return;
         const now = Date.now();
-        if (now - beast.lastFed < 5000) return; /* cooldown */
-
+        if (now - beast.lastFed < FEED_CD) {
+            this.audio?.click?.(0);
+            return; /* cooldown */
+        }
         beast.lastFed = now;
         beast.affinity = Math.min(beast.affinityMax, beast.affinity + 5);
 
@@ -370,16 +542,11 @@ export class BeastModal {
         this.updateAffinityBar(beast);
         this.refreshBuffs(beast);
         this.updateCooldowns(beast);
+        this.bounceStage(1.06);
 
-        /* burst animation */
         this.scene.tweens.add({
-            targets: this.affinityFill,
-            alpha: { from: 0.3, to: 1 },
-            duration: 250,
-            yoyo: true,
-            ease: 'Sine.easeOut',
+            targets: this.affinityFill, alpha: { from: 0.3, to: 1 }, duration: 250, yoyo: true, ease: 'Sine.easeOut',
         });
-
         this.onFeed(beast);
     }
 
@@ -387,8 +554,10 @@ export class BeastModal {
         const beast = this.beasts[this.selectedIndex];
         if (!beast) return;
         const now = Date.now();
-        if (now - beast.lastPet < 3000) return; /* cooldown */
-
+        if (now - beast.lastPet < PET_CD) {
+            this.audio?.click?.(0);
+            return; /* cooldown */
+        }
         beast.lastPet = now;
         beast.affinity = Math.min(beast.affinityMax, beast.affinity + 2);
 
@@ -396,31 +565,56 @@ export class BeastModal {
         this.updateAffinityBar(beast);
         this.refreshBuffs(beast);
         this.updateCooldowns(beast);
+        this.bounceStage(1.04);
 
-        /* gentle pulse */
         this.scene.tweens.add({
-            targets: this.beastName,
-            scaleX: { from: 1, to: 1.15 },
-            scaleY: { from: 1, to: 1.15 },
-            duration: 200,
-            yoyo: true,
-            ease: 'Sine.easeInOut',
+            targets: this.beastName, scaleX: { from: 1, to: 1.12 }, scaleY: { from: 1, to: 1.12 },
+            duration: 200, yoyo: true, ease: 'Sine.easeInOut',
         });
-
         this.onPet(beast);
+    }
+
+    bounceStage(scale) {
+        const card = this.stageCards[this.selectedIndex];
+        if (!card?.sprite) return;
+        this.scene.tweens.killTweensOf(card.sprite);
+        this.scene.tweens.add({
+            targets: card.sprite, scaleX: card.sprite.scaleX * scale, scaleY: card.sprite.scaleY * scale,
+            duration: 160, yoyo: true, ease: 'Sine.easeInOut',
+        });
     }
 
     /* ---------- open / close ---------- */
 
+    /** World rect of the panel (backdrop guard + tests). */
+    getPanelWorldRect() {
+        return localRectToWorld(this.root, -W / 2, -H / 2, W, H);
+    }
+
     open() {
+        if (this.opened) return this;
         this.opened = true;
-        this.root.setVisible(true);
+        this.root.setVisible(true).setAlpha(0).setScale(0.96);
+        this.scene.tweens.killTweensOf(this.root);
+        this.scene.tweens.add({ targets: this.root, alpha: 1, scale: 1, duration: 260, ease: 'Back.easeOut' });
+        this.updateCooldowns();
+        this._cooldownTimer?.remove();
+        this._cooldownTimer = this.scene.time.addEvent({ delay: 500, loop: true, callback: () => this.updateCooldowns() });
+        this.audio?.chime?.(659.25, { gain: 0.06 });
         return this;
     }
 
     close() {
+        if (!this.opened) return this;
         this.opened = false;
-        this.root?.setVisible(false);
+        this._cooldownTimer?.remove();
+        this._cooldownTimer = null;
+        this.scene.tweens.killTweensOf(this.root);
+        this.scene.tweens.add({
+            targets: this.root, alpha: 0, scale: 0.97, duration: 190, ease: 'Quad.easeIn',
+            onComplete: () => this.root?.setVisible(false).setScale(1),
+        });
+        this.audio?.click?.(0);
         return this;
     }
 
@@ -430,9 +624,20 @@ export class BeastModal {
 
     destroy() {
         this.disposers.forEach((off) => off());
+        this._cooldownTimer?.remove();
+        this._cooldownTimer = null;
         this.root?.destroy(true);
         this.opened = false;
     }
+}
+
+/** Scale an image to fit inside (maxW × maxH) preserving aspect ratio. */
+function fitImage(img, maxW, maxH) {
+    const fw = img.width || 1;
+    const fh = img.height || 1;
+    const k = Math.min(maxW / fw, maxH / fh);
+    img.setDisplaySize(fw * k, fh * k);
+    return img;
 }
 
 export default BeastModal;

@@ -51,6 +51,12 @@
         display: flex !important;
         justify-content: center;
         align-items: center;
+        /* Mobile safe area: keep the stage clear of notches / status bars
+           (viewport-fit=cover exposes the inset). The HUD title also sits
+           30px lower inside the canvas — see SAFE_TOP in GardenScene. */
+        box-sizing: border-box;
+        padding-top: env(safe-area-inset-top, 0px);
+        padding-bottom: env(safe-area-inset-bottom, 0px);
       }
       /* Wrapper + canvas: auto margins = the single source of centering. */
       #game-container,

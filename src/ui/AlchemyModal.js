@@ -23,6 +23,7 @@ import { LAYERS } from '../core/Layers.js';
 import { EVENTS } from '../systems/EventManager.js';
 import { HERBS, ELIXIRS, ALCHEMY_RECIPES } from '../systems/AlchemyManager.js';
 import { DIALOG_FONT } from '../systems/DialogSystem.js';
+import { bindBackdropClose, createPanelShield, guarded, localRectToWorld } from './modalInput.js';
 
 const W = 1080;
 const H = 1920;
@@ -331,9 +332,11 @@ export class AlchemyModal {
         // root is stage-centred: every child below uses panel-relative coords
         this.root = scene.add.container(W / 2, H / 2).setDepth(LAYERS.MODAL + 25).setVisible(false).setAlpha(0);
 
-        // dim MUST be parented into the overlay container (codex regression rule)
+        // dim MUST be parented into the overlay container (codex regression rule).
+        // Tap-outside-to-close is guarded: a pointer inside the panel rect is
+        // swallowed, never treated as a backdrop tap (mobile auto-close fix).
         const dim = scene.add.rectangle(0, 0, W, H, 0x05030c, 0.76).setInteractive();
-        dim.on('pointerdown', () => this.close());
+        bindBackdropClose(dim, () => this.getPanelWorldRect(), () => this.close());
         this.dim = dim;
         this.root.add(dim);
 
@@ -347,10 +350,15 @@ export class AlchemyModal {
         panel.strokeRoundedRect(-PW / 2 + 16, -PH / 2 + 16, PW - 32, PH - 32, 20);
         this.root.add(panel);
 
+        // Panel shield: captures every pointerdown inside the panel and calls
+        // event.stopPropagation() so the backdrop beneath never closes the modal.
+        this.panelShield = createPanelShield(scene, 0, 0, PW, PH);
+        this.root.add(this.panelShield);
+
         this.closeButton = text(scene, PW / 2 - 46, -PH / 2 + 38, '×', {
             fontSize: '46px', color: '#ffb0b0', fontStyle: 'bold',
         }).setOrigin(0.5).setInteractive({ useHandCursor: true });
-        this.closeButton.on('pointerdown', () => this.close());
+        this.closeButton.on('pointerdown', guarded(() => this.close()));
         this.root.add(this.closeButton);
 
         this.title = text(scene, 0, -PH / 2 + 52, 'LÒ LUYỆN ĐAN', {
@@ -391,7 +399,7 @@ export class AlchemyModal {
             fontSize: '30px', color: '#fff7dd', fontStyle: 'bold',
         }).setOrigin(0.5);
         const ctaZone = scene.add.zone(0, 0, 460, 78).setInteractive({ useHandCursor: true });
-        ctaZone.on('pointerdown', () => this.onCta());
+        ctaZone.on('pointerdown', guarded(() => this.onCta()));
         this.cta.add([ctaBg, ctaLabel, ctaZone]);
         this.ctaBg = ctaBg;
         this.ctaLabel = ctaLabel;
@@ -521,7 +529,7 @@ export class AlchemyModal {
                 fontSize: '18px', color: '#fff7dd', fontStyle: 'bold',
             }).setOrigin(0.5);
             const useZone = scene.add.zone(88, 0, 60, 40).setInteractive({ useHandCursor: true });
-            useZone.on('pointerdown', () => this.onUseElixir(e.id));
+            useZone.on('pointerdown', guarded(() => this.onUseElixir(e.id)));
             chip.add([g, name, count, useBg, useLabel, useZone]);
             this.content.add(chip);
             this.elixirChips.push({ id: e.id, count, useBg, useLabel, useZone });
@@ -572,7 +580,7 @@ export class AlchemyModal {
                 fontSize: '17px', color: '#9fd8ff',
             }).setOrigin(1, 0.5);
             const zone = scene.add.zone(0, 0, 800, 76).setInteractive({ useHandCursor: true });
-            zone.on('pointerdown', () => this.selectRecipe(r.id));
+            zone.on('pointerdown', guarded(() => this.selectRecipe(r.id)));
             card.add([g, name, desc, dots, ...cnts, meta, zone]);
             this.content.add(card);
             this.recipeCards.push({ recipe: r, card, draw, selected: this.selectedRecipeId === r.id });
@@ -810,6 +818,11 @@ export class AlchemyModal {
 
     isOpen() {
         return this.visible;
+    }
+
+    /** World rect of the panel (used by the backdrop guard + tests). */
+    getPanelWorldRect() {
+        return localRectToWorld(this.root, -PW / 2, -PH / 2, PW, PH);
     }
 
     toggle() {

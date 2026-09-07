@@ -258,7 +258,8 @@ await makeGreenKeySprite('flower_rare_greenscreen.png', 'flower_rare.png', { siz
 await makeGreenKeySprite('icon_sickle_greenscreen.png', 'icon_sickle.png', { size: 192 });
 // Re-keyed from the previous studio-black versions (raw copies of the old files):
 await makeBlackKeySprite('icon_spirit_stone.png', 'icon_spirit_stone.png', { size: 128 });
-await makeBlackKeySprite('bridge_pavilion.png', 'bridge_pavilion.png', { keyLo: 46, keyHi: 150 });
+// bridge_pavilion REMOVED — bg_manor_isometric already contains complete scenery.
+// Never layer duplicate bridge/pavilion patches at (150-350,700-900).
 
 /* ---------------- verification ---------------- */
 // Every sprite must be a 4-channel RGBA PNG with true transparency (the

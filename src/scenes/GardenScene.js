@@ -116,7 +116,6 @@ export default class GardenScene extends Phaser.Scene {
             'icon_spirit_stone',
             'npc_tien_nu',
             'npc_tien_nu_portrait',
-            'bridge_pavilion',
         ];
         for (const a of assets) {
             this.load.image(a, `./assets/images/${a}.png`);
@@ -209,11 +208,10 @@ export default class GardenScene extends Phaser.Scene {
 
     /* ====================== BRIDGE + NPC ====================== */
     createBridgeAndNpc() {
-        // Bridge/pavilion decoration on the upper bridge deck
-        this.bridgeSprite = this.add.image(180, 780, 'bridge_pavilion')
-            .setDisplaySize(280, 210)
-            .setDepth(D.NPC - 10)
-            .setAlpha(0.92);
+        // NOTE: bg_manor_isometric already contains the complete scenery
+        // (pavilion, bridge, lake, mountains). Never layer duplicate
+        // bridge/pavilion patches over it — any overlay at (150-350,700-900)
+        // would produce a faux-checkerboard artifact.
 
         // NPC: Tiên Nữ Hoa Giang — hovering above the bottom-right LOWER bridge
         // deck (x: 890, y: 1345), body facing left toward the garden grid.

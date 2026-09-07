@@ -9,11 +9,12 @@
     "build": "vite build",
     "preview": "vite preview",
     "assets:process": "node scripts/process-assets.mjs",
-    "test": "node scripts/test-logic.mjs && node scripts/runtime-test.mjs",
+    "test": "node scripts/test-logic.mjs && node scripts/verify-asset-standards.mjs && node scripts/runtime-test.mjs",
     "test:logic": "node scripts/test-logic.mjs",
     "test:runtime": "node scripts/runtime-test.mjs",
     "test:render": "node scripts/render-test.mjs",
     "verify:assets": "node scripts/verify-assets.mjs",
+    "verify:format": "node scripts/verify-asset-standards.mjs",
     "overlay": "node scripts/debug-overlay.mjs"
   },
   "dependencies": {

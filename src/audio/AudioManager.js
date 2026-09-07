@@ -190,6 +190,40 @@ export default class AudioManager {
         osc.stop(t0 + 0.08);
     }
 
+    /**
+     * Spring-rain ambience bed for System 8 (Thiên Thời Tứ Thời): a looping
+     * filtered-noise "shhh" plus sparse droplet pings. Started/stopped from the
+     * weather view when Mưa Phùn Linh Tuyền begins / ends. Silent when WebAudio
+     * is unavailable (headless tests, unsupported browsers).
+     */
+    setRain(on) {
+        if (!this.ctx || this.muted === undefined) return;
+        if (on && !this._rainNodes) {
+            const src = this.ctx.createBufferSource();
+            src.buffer = this._noise(2.2, 9000);
+            src.loop = true;
+            const lp = this.ctx.createBiquadFilter();
+            lp.type = 'lowpass';
+            lp.frequency.value = 1150;
+            const hp = this.ctx.createBiquadFilter();
+            hp.type = 'highpass';
+            hp.frequency.value = 240;
+            const g = this.ctx.createGain();
+            g.gain.setValueAtTime(0, this.ctx.currentTime);
+            g.gain.linearRampToValueAtTime(0.05, this.ctx.currentTime + 2.2);
+            src.connect(hp).connect(lp).connect(g).connect(this.master);
+            src.start();
+            this._rainNodes = { src, g };
+        } else if (!on && this._rainNodes) {
+            const { src, g } = this._rainNodes;
+            this._rainNodes = null;
+            try {
+                g.gain.setTargetAtTime(0, this.ctx.currentTime, 0.6);
+                src.stop(this.ctx.currentTime + 3.2);
+            } catch (e) { /* already stopped */ }
+        }
+    }
+
     /** Dreamy ambient pad + slow pentatonic melody. */
     startAmbient() {
         if (!this.ensure() || this.ambientStarted) return;

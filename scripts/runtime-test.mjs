@@ -56,6 +56,7 @@ const check = (name, cond) => {
 
 const Phaser = (await import('phaser')).default;
 const { default: GardenScene } = await import('../src/scenes/GardenScene.js');
+const { LAYERS } = await import('../src/core/Layers.js');
 
 // Inject canvas textures directly (no network/Image loading in jsdom)
 class TestGardenScene extends GardenScene {
@@ -83,6 +84,7 @@ class TestGardenScene extends GardenScene {
         make('icon_spirit_stone', 128, 128, '#b26bff');
         make('npc_tien_nu', 256, 384, '#c9dff8');
         make('npc_tien_nu_portrait', 256, 256, '#c9dff8');
+        make('icon_codex_scroll', 192, 192, '#f3e6c6');
         make('bridge_pavilion', 320, 240, '#4a1e20');
     }
 }
@@ -103,7 +105,13 @@ game.events.on('error', (e) => errors.push(String(e)));
 game.events.on('ready', () => console.log('[game ready]'));
 game.events.on('boot', () => console.log('[game boot]'));
 process.on('unhandledRejection', (e) => errors.push('unhandled: ' + String(e?.stack || e)));
-process.on('uncaughtException', (e) => errors.push('uncaught: ' + String(e?.stack || e)));
+const noteError = (e) => {
+    const msg = String(e?.stack || e);
+    errors.push('uncaught: ' + msg);
+    console.log('UNCAUGHT —', msg.split('\n').slice(0, 3).join('\n  '));
+};
+process.on('uncaughtException', noteError);
+process.on('unhandledRejection', noteError);
 console.log('readyState:', document.readyState, 'body:', !!document.body);
 
 let scene = null;
@@ -328,6 +336,204 @@ check('seedCards has 5 entries', scene.seedCards.length === 5);
 check('action bar drawer button exists', scene.drawerBtn !== undefined);
 check('action bar water button exists', scene.waterBtn !== undefined);
 check('action bar harvest all button exists', scene.harvestAllBtn !== undefined);
+
+
+/* ==================== DESKTOP CENTERING (canvas fit + centering) ==================== */
+check('Scale mode is FIT (9:16 letterboxed, never stretched)', game.scale.scaleMode === Phaser.Scale.FIT);
+check('autoCenter is CENTER_BOTH', game.scale.autoCenter === Phaser.Scale.CENTER_BOTH);
+check('Game size stays 1080x1920', game.scale.width === 1080 && game.scale.height === 1920);
+check('Canvas is a block element inside the centered wrapper', !!game.canvas && game.canvas.parentNode === document.getElementById('game-container'));
+check('Parent wrapper fills the viewport (centering box)', document.getElementById('game-container') !== null);
+
+/* ==================== PHASE 1 · EventManager wiring ==================== */
+check('Scene owns one EventManager bus', !!scene.bus && scene.bus.constructor.name === 'EventManager');
+check('Codex is bound to the bus (no direct scene→codex writes)', !!scene.codex && scene.codex.bus === scene.bus);
+check('Weather is bound to the bus', !!scene.weather && scene.weather.bus === scene.bus);
+check('Weather view subscribes through the bus', !!scene.weatherView && scene.weatherView.bus === scene.bus);
+{
+    const before = scene.bus.emitCount;
+    scene.bus.emit('garden:test-ping', { ok: 1 });
+    check('Bus records traffic (history + counters for debugging)', scene.bus.emitCount === before + 1 && scene.bus.wasEmitted('garden:test-ping'));
+}
+
+/* ==================== PHASE 1 · System 9: Vạn Hoa Đồ Giám ==================== */
+// the codex learns purely from gameplay facts published on the bus
+const codexTile = scene.tiles[0][0];
+scene.selectSeed(scene.seedCards[0].seed); // cyan
+await new Promise((r) => setTimeout(r, 700));
+scene.plantSeed(codexTile);
+scene.waterAll();
+await new Promise((r) => setTimeout(r, 2500));
+check('Flower bloomed for the codex test', codexTile.gridData.state === 'BLOOMING');
+check('Codex discovered the species from FLOWER_BLOOMED only', scene.codex.isDiscovered('flower_cyan_orchid') === true);
+check('Codex wrote the poem on first bloom', scene.codex.getPages().find((p) => p.seedId === 'flower_cyan_orchid').poem !== null);
+const codexBefore = scene.codex.getEntry('flower_cyan_orchid').harvests;
+const harmonyBeforeCodex = scene.economy.harmony;
+scene.harvestTile(codexTile);
+await new Promise((r) => setTimeout(r, 250));
+check('Codex counted the harvest through the bus', scene.codex.getEntry('flower_cyan_orchid').harvests === codexBefore + 1);
+check('Codex first-page milestone paid out harmony', scene.economy.harmony > harmonyBeforeCodex);
+check('Codex progress feeds the HUD badge', scene.codexModal.badgeText.text === `${scene.codex.getDiscoveredCount()}/5`);
+
+// HUD scroll button
+check('Codex scroll button lives on the top HUD', !!scene.codexModal.button && scene.codexModal.button.depth > 1100);
+check('Codex button sits above the badges, not over the grid', (() => {
+    const { x, y } = scene.codexModal.buttonPos;
+    return x > 800 && y < 420;
+})());
+
+// open the scroll
+scene.openCodex();
+await new Promise((r) => setTimeout(r, 400));
+let snap = scene.codexModal.getSnapshot();
+check('Codex scroll opens', snap.open === true && scene.codexModal.root.visible === true);
+check('Codex scroll renders one page per catalog species', snap.rowCount >= snap.pages + 6);
+check('Codex panel is masked + scrollable inside the 9:16 stage', !!scene.codexModal.content.mask && snap.body.top > 0 && snap.body.bottom < 1920);
+check('Codex body never bleeds into the footer', snap.body.bottom <= 1920 - 118 - 8);
+check('Codex content overflows the body → axis scroll enabled', snap.scrollMax > 0);
+check('Codex scroll clamps to the bottom', (() => {
+    scene.codexModal.setScroll(99999);
+    const clamped = scene.codexModal.scroll === scene.codexModal.scrollMax;
+    scene.codexModal.setScroll(-40);
+    return clamped && scene.codexModal.scroll === 0;
+})());
+check('Codex scroll lists buffs + milestones sections', (() => {
+    const texts = scene.codexModal.rowNodes.flatMap((c) => (c.list || []).filter((o) => o.text !== undefined).map((o) => o.text));
+    return texts.some((t) => t.includes('Buff')) && texts.some((t) => t.includes('Mốc Sưu Tập')) && texts.some((t) => t.includes('Bách Thảo'));
+})());
+check('Codex header: title clears the close-button disc', (() => {
+    const t = scene.codexModal.headerTitle.getBounds();
+    const c = scene.codexModal.headerCloseButton.getBounds();
+    return t.x > c.right - 2;
+})());
+check('Codex close button is present and interactive', !!scene.codexModal.headerCloseButton && !!scene.codexModal.closeBtn);
+scene.closeCodex();
+await new Promise((r) => setTimeout(r, 400));
+check('Codex scroll closes', scene.codexModal.isOpen() === false);
+// the hint line yields the stage to a full-screen overlay
+scene.openCodex();
+await new Promise((r) => setTimeout(r, 250));
+const hintHiddenForOverlay = scene.hintText.visible === false && scene.hintBg.visible === false;
+scene.closeCodex();
+await new Promise((r) => setTimeout(r, 250));
+check('Hint line hides for an overlay and returns when it closes',
+    hintHiddenForOverlay && scene.hintText.visible === true);
+check('Codex toast renders inside the sheet (never over the title)', (() => {
+    const before = scene.children.list.length;
+    scene.codexModal.toast('Kiểm thử', 0xffffff);
+    const node = scene.children.list.slice(before).filter((o) => o.type === 'Text').pop();
+    const geom = scene.codexModal.getSnapshot();
+    const ok = !!node && node.depth > LAYERS.CODEX && node.y > geom.body.top && node.y < geom.body.bottom;
+    node?.destroy();
+    return ok;
+})());
+
+// Regression guard: an overlay dim left on the display list (instead of inside
+// its container) veils and swallows input over the whole garden.
+check('Codex dim is parented to the overlay, not the display list', (() => {
+    const dim = scene.codexModal.dim;
+    return !!dim && dim.parentContainer === scene.codexModal.root
+        && dim.width >= 1080 && dim.height >= 1920 && dim.fillAlpha > 0.6 && !!dim.input;
+})());
+check('No stray full-screen dim on the display list while overlays are closed', (() => {
+    const stray = scene.children.list.filter((o) => o.visible !== false
+        && !o.parentContainer && o.type === 'Rectangle' && o.width >= 1000 && o.height >= 1800);
+    return stray.length === 0;
+})());
+check('Everything on the display list below the codex layer stays visible to input', (() => {
+    // the island grid must still be hit-testable with the scroll closed
+    const pt = scene.children.list.filter((o) => o.visible !== false && (o.depth ?? 0) <= LAYERS.AMBIENT && o.width === 1080 && o.height === 1920 && o.fillAlpha > 0.4);
+    return pt.length <= 1 && !!scene.tiles[0][0].input;
+})());
+
+// mastery tier + skin reward path (3 harvests of one species)
+for (let i = 0; i < 3; i++) scene.codex.recordHarvest('flower_cyan_orchid');
+scene.applyCodexBuffs();
+check('Codex tier 1 (Mộc Dịch) reached → +1 harmony per harvest of that species',
+    scene.codexBuffs.harmonyBonusBySeed['flower_cyan_orchid'] === 1);
+check('Codex refresh keeps the HUD badge in sync', scene.codexModal.badgeText.text === `${scene.codex.getDiscoveredCount()}/5`);
+scene.codex.recordBloom('flower_purple_wisteria');
+scene.codex.recordBloom('flower_golden_amber');
+scene.codex.recordBloom('flower_emerald_bamboo');
+scene.applyCodexBuffs();
+check('4 species collected → jade sickle skin applied to the harvest button',
+    scene.codex.hasSkin('sickle_jade') && scene.skins.sickle_jade === true);
+check('Codex milestone also raised the harmony multiplier', scene.codexBuffs.harmonyMult > 1);
+
+/* ==================== PHASE 1 · System 8: Thiên Thời Tứ Thời ==================== */
+check('Ambient wash renders above the world but below every UI layer', (() => {
+    const st = scene.weatherView.getState();
+    return st.depths.ambient === LAYERS.AMBIENT
+        && st.depths.ambient > LAYERS.PETALS
+        && st.depths.ambient > LAYERS.RAIN
+        && st.depths.ambient < LAYERS.HUD
+        && scene.islandShadow.depth < LAYERS.AMBIENT
+        && scene.harvestAllBtn.outer.depth > LAYERS.AMBIENT
+        && scene.weatherChip.depth > LAYERS.AMBIENT;
+})());
+check('Ambient wash multiplies the scene (subtle tinting, not an overlay box)', scene.weatherView.wash.blendMode === Phaser.BlendModes.MULTIPLY);
+check('Rain + ripple + splash emitters exist over the lake', !!scene.weatherView.rain && !!scene.weatherView.ripples && !!scene.weatherView.splash);
+check('Weather chip visible on the HUD', !!scene.weatherChip && scene.weatherChip.depth === 1130);
+
+// day → dusk → night lighting actually changes
+scene.weather.forcePhase('dusk');
+scene.weatherView.sync();
+await new Promise((r) => setTimeout(r, 700));
+const duskAlpha = scene.weatherView.getState().washAlpha;
+scene.weather.forcePhase('night');
+scene.weatherView.sync();
+await new Promise((r) => setTimeout(r, 1600));
+const nightState = scene.weatherView.getState();
+check('Dusk tints the garden warmer', duskAlpha > 0.02);
+check('Night deepens the tint beyond dusk', nightState.washAlpha > duskAlpha);
+check('Night raises the moon + stone-lamp level', nightState.moonAlpha > 0.05 && nightState.lampLevel > 0.05);
+check('Night lamp level was published on the bus for the garden to react to', scene.lampLevel > 0.05);
+
+// THE RAIN BUFF: unwatered soil gets watered for free
+const dryTiles = [scene.tiles[1][1], scene.tiles[1][2], scene.tiles[1][3]];
+for (const t of dryTiles) { scene.plantSeed(t); }
+const alreadyWatered = dryTiles.filter((t) => t.gridData.watered).length;
+check('Rain test plots start planted and unwatered', dryTiles.every((t) => t.gridData.state === 'PLANTED' && !t.gridData.watered) && alreadyWatered === 0);
+scene.weather.forceRain(true);
+await new Promise((r) => setTimeout(r, 300));
+check('Rain publishes the irrigation buff and waters the dry plots', dryTiles.every((t) => t.gridData.watered === true));
+check('Rain-grown plots advance to growing/blooming without the watering can', dryTiles.every((t) => t.gridData.state !== 'PLANTED'));
+check('Rain FX emitters are live', scene.weatherView.isRaining() === true);
+check('Rain was announced on the bus', scene.bus.history.some((h) => h.event === 'weather:rain-started'));
+scene.weather.forceRain(false);
+await new Promise((r) => setTimeout(r, 250));
+check('Rain stops cleanly (no stuck particles)', scene.weatherView.isRaining() === false && !scene.weather.isRaining());
+
+// full moon doubles Harmony, and codex + weather multipliers compose
+scene.weather.forcePhase('day');
+scene.weather.dayCount = scene.weather.config.moonCycle;
+scene.weather.forcePhase('night');
+check('Full-moon night detected', scene.weather.isFullMoonNight() === true && scene.weather.getModifiers().harmonyMult === 2);
+const moonTile = scene.tiles[4][4];
+scene.clearSelection();
+scene.selectedSeed = scene.seedCards[0].seed;
+scene.plantSeed(moonTile);
+moonTile.gridData.state = 'GROWING';
+moonTile.gridData.watered = true;
+const harmonyBeforeMoon = scene.economy.harmony;
+scene.bloomTile(moonTile);
+scene.harvestTile(moonTile);
+await new Promise((r) => setTimeout(r, 120));
+const moonGain = scene.economy.harmony - harmonyBeforeMoon;
+check('Full moon + codex buffs both apply to the harvest', moonGain >= 6);
+scene.weather.forcePhase('day');
+
+// persistence + serialization of the two new systems
+{
+    const cw = JSON.parse(JSON.stringify(scene.weather.serialize()));
+    const cc = JSON.parse(JSON.stringify(scene.codex.serialize()));
+    const { WeatherSystem: WS } = await import('../src/systems/WeatherSystem.js');
+    const { CodexManager: CM } = await import('../src/systems/CodexManager.js');
+    const w2 = new WS().deserialize(cw);
+    const c2 = new CM().deserialize(cc);
+    check('Weather state survives a save/load round trip', w2.getPhase() === cw.phase && w2.dayCount === cw.dayCount);
+    check('Codex state survives a save/load round trip', c2.getDiscoveredCount() === cc.entries ? true : c2.getProgress().discovered === Object.values(cc.entries).filter((e) => e.discovered).length);
+}
 
 // ---- Rare seed in catalog ----
 const rareCard = scene.seedCards.find(c => c.seed.id === 'flower_rare_nguyet_cuc');

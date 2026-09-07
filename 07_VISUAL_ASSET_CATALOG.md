@@ -38,6 +38,9 @@ Tài liệu này chuẩn hóa toàn bộ câu lệnh tạo ảnh (Prompt), phong
    - *Prompt:* "Jade sickle with carved gold dragon handle, glowing sharp crescent blade, mythical harvest tool icon --isolated on black background #000000"
 3. **Nút Thùng Linh Dịch (`icon_water_bucket.png`):**
    - *Prompt:* "Celestial bronze bucket filled with bubbling glowing cyan spiritual water, ornate handle, mobile game icon --isolated on black background #000000"
+4. **Nút Vạn Hoa Đồ Giám (`icon_codex_scroll.png`):** ✅ ĐÃ TẠO (192x174 RGBA, 81KB)
+   - *Prompt:* "Unrolled ancient guofeng rice-paper scroll with carved jade rollers, wisteria sprig and ink poem columns on the sheet, mobile game icon --isolated on pure solid black background #000000"
+   - *Hậu kỳ:* raw `raw_assets/icon_codex_scroll_black.png` (1254px) → `makeBlackKeySprite` (keyLo 40 / keyHi 150) → trim → 192px → `public/assets/images/icon_codex_scroll.png`. Lặp qua `npm run assets:process` (task đã khai báo trong `scripts/process-assets.mjs`).
 
 ---
 
@@ -46,3 +49,13 @@ Tài liệu này chuẩn hóa toàn bộ câu lệnh tạo ảnh (Prompt), phong
 2. Chạy lệnh script Alpha Matting (Python rembg / Node sharp) bóc tách toàn bộ pixel nền đen thành Alpha = 0.
 3. Kiểm tra 4 góc ảnh: Đảm bảo không tồn tại viền ô caro xám trắng giả lập trong suốt.
 4. Ghi trực tiếp vào thư mục `public/assets/images/`.
+5. Chạy `npm run verify:format` (script `scripts/verify-asset-standards.mjs`) để cổng kiểm
+   duyệt tự động xác nhận: 4 kênh · depth 8-bit · alpha thật (không caro giả lập) ·
+   4 góc trong suốt · không còn màu nền key · đúng ngân sách kích thước ·
+   mọi key trong `preload` đều có file và không có file mồ côi.
+
+> **Ghi chú ngân sách nền:** `bg_manor_isometric.png` hiện là PNG 1080x1920 (969KB),
+> vượt mức "nén < 400KB" của mục B.1 vì PNG không nén nổi nền vẽ tay xuống dưới mức đó
+> (q80 giữ nguyên ~962KB). Bản WebP q80 đo được **374KB** — chuyển sang WebP là việc của
+> bước đóng gói (cùng lúc đổi `load.image` theo đuôi file), nên script chỉ cảnh báo WARN
+> cho riêng file nền, không fail build.

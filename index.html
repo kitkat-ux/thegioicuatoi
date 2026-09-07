@@ -6,33 +6,74 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
-    <meta name="theme-color" content="#1a0f2e" />
+    <meta name="theme-color" content="#0b0c16" />
     <title>Hoa Viên Tiên Cảnh — Floral Manor</title>
     <style>
+      /* ==================================================================
+         DESKTOP CENTERING (critical fix)
+         The 1080x1920 game is letterboxed by Phaser.Scale.FIT. On wide
+         screens the canvas must sit dead-center on BOTH axes, so the page
+         shell is a full-viewport flex centering box and every layer inside
+         it uses `margin: auto !important`.
+
+         Why margin:auto matters: Phaser.Scale.CENTER_BOTH centers the canvas
+         by writing INLINE marginLeft/marginTop (each = half the free space).
+         Inside a flex parent that already centers its item, those inline
+         offsets were added ON TOP of the flex centering, pushing the canvas
+         down/right by half the letterbox — the off-center look on desktop.
+         `margin: auto !important` wins over Phaser's inline styles and,
+         because auto margins on a flex item absorb all the free space, the
+         canvas lands exactly centered at any aspect ratio. The wrapper is
+         deliberately `display: flex` (not block): auto margins on a *block*
+         child resolve to 0 vertically, which would pin the canvas to the top.
+         ================================================================== */
       html,
       body {
         margin: 0;
         padding: 0;
-        height: 100%;
-        background: #120b22;
+        width: 100vw;
+        height: 100vh; /* desktop + legacy */
+        height: 100dvh; /* mobile: excludes browser chrome when supported */
+        background-color: #0b0c16; /* letterbox color = Phaser backgroundColor */
+        display: flex;
+        justify-content: center;
+        align-items: center;
         overflow: hidden;
         touch-action: none;
         font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
         -webkit-tap-highlight-color: transparent;
       }
       #game-container {
+        position: relative;
         width: 100%;
         height: 100%;
-        display: flex;
-        align-items: center;
+        /* flex (not block) so the canvas auto-margins center BOTH axes */
+        display: flex !important;
         justify-content: center;
+        align-items: center;
       }
+      /* Wrapper + canvas: auto margins = the single source of centering. */
+      #game-container,
       canvas {
-        display: block;
+        margin: auto !important;
+        display: block !important;
       }
-      /* Phaser DOM container (search input lives here) */
+      /* `display:block` on the canvas kills the inline baseline gap; the
+         wrapper keeps flex (declared after, so it wins for #game-container). */
+      #game-container {
+        display: flex !important;
+      }
+      /* Phaser DOM container (the seed-drawer search input lives in here).
+         Phaser gives it the canvas's inline margins; `inset: 0` +
+         `margin: auto !important` re-centers it so the DOM input stays glued
+         to the centered canvas on desktop instead of inheriting the offset. */
       #game-container .phaser-container {
-        position: absolute;
+        position: absolute !important;
+        left: 0;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        margin: auto !important;
       }
       .fm-search {
         width: 100%;

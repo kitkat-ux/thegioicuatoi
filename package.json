@@ -1,0 +1,28 @@
+{
+  "name": "floral-manor",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "2.5D Isometric Guofeng Floral Garden Simulation — Phaser 3 + Vite",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "assets:process": "node scripts/process-assets.mjs",
+    "test": "node scripts/test-logic.mjs && node scripts/runtime-test.mjs",
+    "test:logic": "node scripts/test-logic.mjs",
+    "test:runtime": "node scripts/runtime-test.mjs",
+    "overlay": "node scripts/debug-overlay.mjs"
+  },
+  "dependencies": {
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "@napi-rs/canvas": "^1.0.8",
+    "canvas": "npm:@napi-rs/canvas@^1.0.8",
+    "jsdom": "^30.0.1",
+    "phaser3spectorjs": "^0.0.8",
+    "sharp": "^0.33.5",
+    "vite": "^7.3.0"
+  }
+}

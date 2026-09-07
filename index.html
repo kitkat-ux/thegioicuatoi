@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#1a0f2e" />
+    <title>Hoa Viên Tiên Cảnh — Floral Manor</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #120b22;
+        overflow: hidden;
+        touch-action: none;
+        font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+        -webkit-tap-highlight-color: transparent;
+      }
+      #game-container {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      canvas {
+        display: block;
+      }
+      /* Phaser DOM container (search input lives here) */
+      #game-container .phaser-container {
+        position: absolute;
+      }
+      .fm-search {
+        width: 100%;
+        height: 100%;
+        box-sizing: border-box;
+        background: rgba(24, 14, 44, 0.88);
+        border: 2px solid rgba(255, 208, 116, 0.75);
+        border-radius: 14px;
+        color: #ffe9c4;
+        font-size: 26px;
+        padding: 6px 14px 6px 44px;
+        outline: none;
+        text-align: left;
+      }
+      .fm-search::placeholder {
+        color: rgba(255, 233, 196, 0.55);
+        font-style: italic;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="game-container"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

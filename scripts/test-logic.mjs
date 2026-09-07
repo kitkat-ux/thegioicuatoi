@@ -2,7 +2,7 @@
 import { IsoMath } from '../src/core/IsoMath.js';
 import { SEED_CATALOG, normalizeText, SEED_BY_ID } from '../src/data/seedCatalog.js';
 import { EconomySystem, SEED_RARITY, QUESTS, ECONOMY_DEFAULTS } from '../src/systems/EconomySystem.js';
-import { DialogSystem, NPC_DIALOGUE } from '../src/systems/DialogSystem.js';
+import { DialogSystem, NPC_DIALOGUE, DIALOG_FONT } from '../src/systems/DialogSystem.js';
 
 let fails = 0;
 const check = (name, cond) => {
@@ -150,6 +150,42 @@ check('NPC_DIALOGUE has greeting_default', NPC_DIALOGUE.greeting_default !== und
 check('NPC_DIALOGUE has farewell', NPC_DIALOGUE.farewell !== undefined);
 check('NPC_DIALOGUE has explain_rare_seed', NPC_DIALOGUE.explain_rare_seed !== undefined);
 check('all nodes have text', Object.values(NPC_DIALOGUE).every(n => n.text.length > 0));
+check('no node contains stray CJK glyphs (Vietnamese-only text)', Object.values(NPC_DIALOGUE).every(n => !/[\u4e00-\u9fff]/.test(n.text)));
+check('quest_details node flags questList rendering', NPC_DIALOGUE.quest_details.questList === true);
+
+// Unicode font stack for the dialog (khung thoại)
+check('DIALOG_FONT is the Unicode system stack', DIALOG_FONT === 'system-ui, -apple-system, sans-serif');
+
+// Quest-list rows (dialog body) — live progress + completion
+const qdialog = new DialogSystem();
+qdialog.updateQuestState({
+    totalBlooms: 4,
+    maxSimultaneousBlooms: 12,
+    totalStonesEarned: 9,
+    rareBlooms: 0,
+    totalHarvests: 3,
+    completedQuests: new Set(['first_bloom']),
+});
+const rows = qdialog.getQuestRows();
+check('quest rows: one per quest (6)', rows.length === 6);
+check('quest rows: first_bloom done via completedQuests', rows.find(r => r.id === 'first_bloom')?.done === true);
+check('quest rows: green_thumb progress 4/10 not done', (() => {
+    const r = rows.find(q => q.id === 'green_thumb');
+    return r && r.done === false && r.progress === 4 && r.target === 10;
+})());
+check('quest rows: full_garden tracks maxSimultaneousBlooms 12/36', (() => {
+    const r = rows.find(q => q.id === 'full_garden');
+    return r && r.progress === 12 && r.target === 36;
+})());
+check('quest rows: stone_collector 9/50', (() => {
+    const r = rows.find(q => q.id === 'stone_collector');
+    return r && r.progress === 9 && r.target === 50;
+})());
+check('quest rows: completion by value (green_thumb at 10 blooms)', (() => {
+    const d2 = new DialogSystem();
+    d2.updateQuestState({ totalBlooms: 10, completedQuests: new Set() });
+    return d2.getQuestRows().find(q => q.id === 'green_thumb')?.done === true;
+})());
 
 console.log(fails === 0 ? '\nALL TESTS PASSED' : `\n${fails} TEST(S) FAILED`);
 process.exit(fails === 0 ? 0 : 1);

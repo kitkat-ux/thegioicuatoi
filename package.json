@@ -12,6 +12,8 @@
     "test": "node scripts/test-logic.mjs && node scripts/runtime-test.mjs",
     "test:logic": "node scripts/test-logic.mjs",
     "test:runtime": "node scripts/runtime-test.mjs",
+    "test:render": "node scripts/render-test.mjs",
+    "verify:assets": "node scripts/verify-assets.mjs",
     "overlay": "node scripts/debug-overlay.mjs"
   },
   "dependencies": {

@@ -3,9 +3,31 @@
  *
  * Pure data/logic module (no Phaser dependency) so it is unit-testable.
  *
- * The Tiên Nữ Hoa Giang NPC at the bridge/pavilion delivers quest-aware
+ * The Tiên Nữ Hoa Giang NPC at the lower bridge deck delivers quest-aware
  * dialogue that changes based on the player's progress and active quests.
  */
+
+import { QUESTS } from './EconomySystem.js';
+
+/**
+ * Unicode font stack used by every dialog text (khung thoại). system-ui
+ * carries full Vietnamese diacritic coverage (Đầu tiên, tất cả, quý hiếm…)
+ * so precomposed and combining accents render seamlessly in canvas text.
+ */
+export const DIALOG_FONT = 'system-ui, -apple-system, sans-serif';
+
+/**
+ * Stat key + goal per quest id, used to render the quest list (body of the
+ * dialog) with live progress counters.
+ */
+export const QUEST_TARGETS = {
+    first_bloom: { stat: 'totalBlooms', target: 1 },
+    green_thumb: { stat: 'totalBlooms', target: 10 },
+    full_garden: { stat: 'maxSimultaneousBlooms', target: 36 },
+    stone_collector: { stat: 'totalStonesEarned', target: 50 },
+    rare_bloom: { stat: 'rareBlooms', target: 1 },
+    harvest_master: { stat: 'totalHarvests', target: 50 },
+};
 
 /**
  * Dialogue nodes for Tiên Nữ Hoa Giang.
@@ -15,12 +37,14 @@
  * - text: the dialogue line (Vietnamese)
  * - choices: array of { text, next } where next is either a node id or
  *   a function (questState) => nodeId for conditional branching
+ * - questList: optional flag — the scene renders the live quest list rows
+ *   below the text inside the scrollable body section
  * - condition: optional function (questState) => boolean; if false, node is skipped
  */
 export const NPC_DIALOGUE = {
     greeting_default: {
         id: 'greeting_default',
-        text: 'Chào ngươi, người chăm sóc hoa viên. Ta là Tiên Nữ Hoa Giang,守护守护 cây cầu này. Hoa viên hôm nay thật yên bình... ✿',
+        text: 'Chào ngươi, người chăm sóc hoa viên. Ta là Tiên Nữ Hoa Giang, người trấn giữ cây cầu kiều này. Hoa viên hôm nay thật yên bình... ✿',
         choices: [
             { text: 'Tiên Nữ có nhiệm vụ gì cho ta?', next: 'quest_offer' },
             { text: 'Ta muốn nghe về hoa viên.', next: 'lore_garden' },
@@ -49,7 +73,8 @@ export const NPC_DIALOGUE = {
 
     quest_details: {
         id: 'quest_details',
-        text: 'Nhiệm vụ của ngươi:\n\n🌱 Bông Hoa Đầu Tiên — Nở bông hoa đầu tiên (+3 Đá)\n🌿 Bàn Tay Xanh — Nở 10 bông hoa (+8 Đá)\n🌸 Hoa Viên Đại Thành — Nở 36 bông cùng lúc (+20 Đá)\n💎 Người Thu Nhập Đá — Tích 50 Đá Linh Khí (+10 Đá)\n🌙 Nguyệt Cúc Thiên Hà — Trồng hoa quý hiếm (+15 Đá)',
+        text: 'Nhiệm vụ của ngươi hiện tại — hoàn thành để nhận Đá Linh Khí:',
+        questList: true,
         choices: [
             { text: 'Ta sẽ hoàn thành tất cả!', next: 'farewell' },
             { text: 'Nguyệt Cúc Thiên Hà là gì?', next: 'explain_rare_seed' },
@@ -145,6 +170,11 @@ export class DialogSystem {
             hasRareSeed: false,
             spiritStones: 0,
             completedQuests: new Set(),
+            // live economy stats feeding the quest-list progress counters
+            maxSimultaneousBlooms: 0,
+            totalStonesEarned: 0,
+            rareBlooms: 0,
+            totalHarvests: 0,
         };
     }
 
@@ -154,6 +184,29 @@ export class DialogSystem {
      */
     updateQuestState(state) {
         Object.assign(this.questState, state);
+    }
+
+    /**
+     * Build the quest-list rows for the dialog body: one row per quest with
+     * live progress and completion status.
+     * @returns {Array<{ id: string, name: string, reward: number, done: boolean, progress: number, target: number }>}
+     */
+    getQuestRows() {
+        return QUESTS.map((quest) => {
+            const goal = QUEST_TARGETS[quest.id] || { stat: 'totalBlooms', target: 1 };
+            const value = Number(this.questState[goal.stat] ?? 0);
+            const completed = this.questState.completedQuests;
+            const done = (completed && typeof completed.has === 'function' && completed.has(quest.id))
+                || value >= goal.target;
+            return {
+                id: quest.id,
+                name: quest.name,
+                reward: quest.reward,
+                done,
+                progress: Math.min(value, goal.target),
+                target: goal.target,
+            };
+        });
     }
 
     /**

@@ -8,9 +8,12 @@
 // The asset list is extracted from src/scenes/GardenScene.js so this check can
 // never drift from what the game actually loads.
 import fs from 'fs';
+import path from 'path';
+import { pathToFileURL } from 'url';
 
 const BASE = (process.argv[2] || 'http://localhost:4173').replace(/\/$/, '');
 const sceneSrc = fs.readFileSync('src/scenes/GardenScene.js', 'utf8');
+const { FISHING_ASSET_MANIFEST } = await import(pathToFileURL(path.resolve('src/data/FishingAssetManifest.js')).href);
 
 const match = sceneSrc.match(/const assets = \[([\s\S]*?)\]/);
 if (!match) {
@@ -18,9 +21,15 @@ if (!match) {
     process.exit(1);
 }
 const assets = [...match[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+const fishingAssets = Object.values(FISHING_ASSET_MANIFEST.textures);
+const assetChecks = [
+    ...assets.map((key) => ({ key, label: key, rel: `./assets/images/${key}.png`, disk: `public/assets/images/${key}.png` })),
+    ...fishingAssets.map((asset) => ({ key: asset.key, label: asset.key, rel: asset.path, disk: `public/${asset.path.replace(/^\.\//, '')}` })),
+];
 
 // Every public image must also exist on disk
 const files = fs.readdirSync('public/assets/images').filter((f) => f.endsWith('.png'));
+const fishingFiles = fs.readdirSync('public/assets/fishing').filter((f) => f.endsWith('.png'));
 
 let fails = 0;
 const results = [];
@@ -40,15 +49,14 @@ async function check(url, label) {
 // index page
 await check(`${BASE}/`, 'index.html');
 
-for (const key of assets) {
-    const rel = `./assets/images/${key}.png`;
-    const onDisk = fs.existsSync(`public/assets/images/${key}.png`);
+for (const asset of assetChecks) {
+    const onDisk = fs.existsSync(asset.disk);
     if (!onDisk) {
         fails++;
-        results.push({ label: key, url: rel, status: 'MISSING ON DISK', type: '' });
+        results.push({ label: asset.label, url: asset.rel, status: 'MISSING ON DISK', type: '' });
         continue;
     }
-    await check(`${BASE}/assets/images/${key}.png`, key);
+    await check(`${BASE}/${asset.rel.replace(/^\.\//, '')}`, asset.label);
 }
 
 for (const r of results) {
@@ -56,14 +64,16 @@ for (const r of results) {
     console.log(`${ok ? '200' : 'FAIL'}  ${String(r.status).padEnd(18)} ${r.label.padEnd(24)} ${r.url}  ${r.type}`);
 }
 
-// any public png not in the preload list (informational)
+// Any public PNG not represented by a preloader/manifest entry is informational.
 const preloaded = new Set(assets.map((a) => `${a}.png`));
 const unreferenced = files.filter((f) => !preloaded.has(f));
-if (unreferenced.length) {
-    console.log(`\nnote: files present but not preloaded (loaded dynamically or unused): ${unreferenced.join(', ')}`);
+const fishingManifestFiles = new Set(fishingAssets.map((asset) => asset.path.split('/').pop()));
+const unreferencedFishing = fishingFiles.filter((f) => !fishingManifestFiles.has(f));
+if (unreferenced.length || unreferencedFishing.length) {
+    console.log(`\nnote: files present but not preloaded (loaded dynamically or unused): ${[...unreferenced, ...unreferencedFishing].join(', ')}`);
 }
 
-console.log(`\n${assets.length} preloaded assets + index checked — ${fails} failure(s), ${assets.filter((a) => true).length - fails >= 0 ? '' : ''}404 count must be zero`);
+console.log(`\n${assetChecks.length} image assets + index checked — ${fails} failure(s), 404 count must be zero`);
 const notFound = results.filter((r) => r.status === 404).length;
 console.log(`404s: ${notFound}`);
 

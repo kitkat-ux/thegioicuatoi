@@ -145,20 +145,20 @@ export default class GardenScene extends Phaser.Scene {
             .setDepth(D.NPC - 10)
             .setAlpha(0.9);
 
-        // NPC: Tiên Nữ Hoa Giang
-        this.npcGroup = this.add.container(160, 720).setDepth(D.NPC);
-        const npcSprite = this.add.image(0, 0, 'npc_tien_nu')
-            .setDisplaySize(140, 210);
+        // NPC: Tiên Nữ Hoa Giang — standing on stone path/bridge, scaled to 0.8
+        this.npcGroup = this.add.container(220, 780).setDepth(D.NPC);
+        const npcSprite = this.add.image(0, -40, 'npc_tien_nu')
+            .setDisplaySize(205, 307);
         // NPC glow aura
-        const npcGlow = this.add.image(0, 20, 'glow')
+        const npcGlow = this.add.image(0, -20, 'glow')
             .setTint(0xc9dff8).setAlpha(0.25).setScale(1.8, 2.2);
         // Name tag
-        const npcName = this.add.text(0, 115, 'Tiên Nữ Hoa Giang', {
+        const npcName = this.add.text(0, 120, 'Tiên Nữ Hoa Giang', {
             fontFamily: 'Georgia, serif', fontSize: '20px', color: '#c9dff8',
             align: 'center', stroke: '#1b1140', strokeThickness: 4,
         }).setOrigin(0.5);
         // Interaction zone
-        const npcZone = this.add.zone(0, 20, 160, 240).setInteractive();
+        const npcZone = this.add.zone(0, -10, 180, 320).setInteractive();
         npcZone.on('pointerdown', () => this.onNpcClick());
 
         this.npcGroup.add([npcGlow, npcSprite, npcName, npcZone]);
@@ -166,7 +166,7 @@ export default class GardenScene extends Phaser.Scene {
         // Breathing / float idle animation
         this.tweens.add({
             targets: this.npcGroup,
-            y: { from: 714, to: 726 },
+            y: { from: 774, to: 786 },
             duration: 2800,
             yoyo: true,
             repeat: -1,

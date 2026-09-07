@@ -1,5 +1,28 @@
 # 06. Kế Hoạch & Thiết Kế Các Tính Năng Mở Rộng (Long-term Gameplay Roadmap)
 
+> **Trạng thái hiện tại (v1.0 — Hoa Viên Tiên Cảnh):** lõi game đã hoàn thiện —
+> đảo thiên thạch lơ lửng **Linh Đảo Phù Vân** với lưới đất 6x6, NPC **Tiên Nữ
+> Hoa Giang** trên cầu kiều dưới (đối thoại nhiệm vụ), ngăn hạt giống + tìm kiếm
+> thời gian thực, tưới nước một chạm (quảng cáo thưởng), liềm thu hoạch,
+> kinh tế Đá Linh Khí / Điểm Hòa Hợp và 6 nhiệm vụ cột mốc.
+>
+# Expanded Systems Roadmap — 10 future systems
+
+| # | System (EN) | Hệ thống (VI) | Mục |
+|---|-------------|----------------|----|
+| 1 | Multi-biome realms | Đa Hoa Viên | [xem](#1-đa-hoa-viên-multi-biome-realms) |
+| 2 | Zen fishing | Linh Đầm Câu Ngư | [xem](#2-linh-đầm-câu-ngư-zen-fishing-minigame) |
+| 3 | Beast ranching | Ngự Thú Tiên Viên | [xem](#3-ngự-thú-tiên-viên-spiritual-beast-ranching) |
+| 4 | Flower breeding | Lai Tạo Kỳ Hoa Dị Thảo | [xem](#4-lai-tạo-kỳ-hoa-dị-thảo-cross-breeding--mutation) |
+| 5 | Alchemy crafting | Lò Luyện Đan & Tiên Trà | [xem](#5-lò-luyện-đan--tiên-trà-alchemy--crafting) |
+| 6 | Visitor orders | Tiên Khách Cầu Kiều | [xem](#6-tiên-khách-cầu-kiều-visitor-order-system) |
+| 7 | Feng Shui buffs | Phong Thủy Trận Đồ | [xem](#7-phong-thủy-trận-đồ-feng-shui-layout-buffs) |
+| 8 | Dynamic weather | Khí Vận & Chu Kỳ Tiết Khí | [xem](#8-khí-vận--chu-kỳ-tiết-khí-dynamic-weather--daynight) |
+| 9 | Flora codex | Bách Thảo Đồ Giám | [xem](#9-bách-thảo-đồ-giám-codex--collector-journal) |
+| 10 | Idle automation | Tích Lũy Nhàn Rỗi | [xem](#10-tích-lũy-nhàn-rỗi-idle-zen-automation) |
+
+---
+
 ## 1. Đa Hoa Viên (Multi-Biome Realms)
 
 - Cơ chế: Mở khóa các vùng đất tu tiên mới khi đạt cấp độ Hòa Hợp cao.
@@ -10,11 +33,11 @@
 
   + Bích Vân Đầm: Mặt nước nổi cánh sen, trồng các loài Thủy Sinh Tiên Thảo.
 
-  + U Hỏa Động: Vách đá dung nham, thích hợp ươm mầm Hỏa Diễm Quả.
+  + U Hỏa Động: Vách đá dung nham, thích hợp cho ươm mầm Hỏa Diễm Quả.
 
 ## 2. Linh Đầm Câu Ngư (Zen Fishing Minigame)
 
-- Vị trí: Tương tác tại mặt hồ nước bên dưới cầu kiều.
+- Vị trí: Tương tác tại mặt hồ nước bên dưới cầu kiều (nơi Tiên Nữ Hoa Giang đang đứng canh).
 
 - Cơ chế: Chạm giữ để quăng cần, thả tay khi phao nhấp nhô để kéo cá.
 

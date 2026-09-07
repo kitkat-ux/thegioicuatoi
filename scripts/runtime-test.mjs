@@ -82,6 +82,7 @@ class TestGardenScene extends GardenScene {
         make('icon_sickle', 192, 192, '#8a5a26');
         make('icon_spirit_stone', 128, 128, '#b26bff');
         make('npc_tien_nu', 256, 384, '#c9dff8');
+        make('npc_tien_nu_portrait', 256, 256, '#c9dff8');
         make('bridge_pavilion', 320, 240, '#4a1e20');
     }
 }
@@ -139,9 +140,46 @@ check('HUD shows spirit stones', scene.stoneValue !== undefined);
 check('dialog system initialized', scene.dialog !== null && scene.dialog !== undefined);
 check('dialog box exists', scene.dialogBox !== undefined);
 check('dialog box starts hidden', scene.dialogVisible === false);
+check('dialog body max-height is 180px', scene.dialogBodyMaxH === 180);
+check('dialog body is masked (clip, no overflow)', !!scene.dialogBodyMask);
+check('dialog uses Unicode font stack (system-ui)', scene.dialogText.style.fontFamily.includes('system-ui'));
 
 // ---- NPC exists ----
 check('NPC group created', scene.npcGroup !== undefined);
+check('NPC at lower bridge deck (890, 1345)', scene.npcGroup.x === 890 && scene.npcGroup.y >= 1341 && scene.npcGroup.y <= 1349);
+check('NPC idle float tween is sinusoidal yoyo ±4px', (() => {
+    const t = scene.npcFloatTween;
+    if (!t) return false;
+    const yd = t.data?.find?.((d) => d.key === 'y');
+    // TweenData exposes start/end (Phaser 3.90); from/to yoyo around y=1345
+    return !!yd && Math.round(yd.start) === 1341 && Math.round(yd.end) === 1349 && yd.yoyo === true;
+})());
+
+// ---- Floating island (Linh Đảo Phù Vân) ----
+check('island shadow exists beneath the island', !!scene.islandShadow);
+check('island shadow alpha ~0.45 on the water', Math.abs(scene.islandShadow.alpha - 0.45) < 0.08);
+check('island shadow behind the island (depth)', scene.islandShadow.depth < scene.platform.depth);
+check('island platform aligns with the grid center', (() => {
+    const tex = scene.textures.get('platform').getSourceImage();
+    const expectedY = 1110 + (tex.height / 2 - 270) * 0.82; // diamond center -> (540, 1110)
+    return Math.abs(scene.platform.x - 540) < 0.01 && Math.abs(scene.platform.y - expectedY) < 0.01;
+})());
+
+// ---- Action bar: sleek scale + generous hitboxes + micro-animations ----
+check('3 action buttons configured', Array.isArray(scene.actionButtons) && scene.actionButtons.length === 3);
+check('action buttons ~20% smaller (86px visual radius)', scene.actionButtons.every((b) => b.radius === 86));
+check('action buttons keep generous 172px touch hitbox', scene.actionButtons.every((b) => b.hitRadius === 172));
+check('action buttons have press feedback handlers', scene.actionButtons.every((b) => typeof b.press === 'function' && typeof b.release === 'function'));
+
+// press feedback: 0.9x down on pointerdown, bounce back to 1.0 on release
+const testBtn = scene.actionButtons[2];
+testBtn.press();
+await new Promise((r) => setTimeout(r, 120));
+const pressedScale = testBtn.inner.scaleX;
+testBtn.release();
+await new Promise((r) => setTimeout(r, 450));
+check('press feedback scales to 0.9x on pointerdown', Math.abs(pressedScale - 0.9) < 0.02);
+check('press feedback bounces back to 1.0x on release', Math.abs(testBtn.inner.scaleX - 1) < 0.02);
 
 // ---- Seed drawer + real-time search ----
 scene.openDrawer();
@@ -234,6 +272,40 @@ check('no runtime errors after ad flow', errors.length === 0);
 scene.onNpcClick();
 await new Promise((r) => setTimeout(r, 300));
 check('dialog opens on NPC click', scene.dialogVisible === true);
+
+// ---- Dialog structure: navigate to the quest list (quest_details) ----
+// The greeting variant depends on live quest state; walk toward quest_details.
+let navGuard = 0;
+while (scene.dialog.currentNodeId !== 'quest_details' && navGuard++ < 4) {
+    const node = scene.dialog.getCurrentNode();
+    const idx = node.choices.findIndex((c) => {
+        const next = typeof c.next === 'function' ? c.next(scene.dialog.questState) : c.next;
+        return next === 'quest_details' || next === 'quest_offer';
+    });
+    scene.onDialogChoice(Math.max(0, idx));
+    await new Promise((r) => setTimeout(r, 80));
+}
+check('navigated to quest_details node', scene.dialog.currentNodeId === 'quest_details');
+check('quest list renders 6 rows', scene.questRowContainers.length === 6);
+check('quest list overflows 180px body -> scrollable', scene.dialogScrollMax > 0);
+check('quest rows show live progress counters', (() => {
+    const texts = scene.questRowContainers
+        .flatMap((c) => c.list.filter((o) => o.text !== undefined).map((o) => o.text));
+    return texts.some((t) => /\/\d+/.test(t)) && texts.some((t) => t.includes('hoàn thành'));
+})());
+// scroll clamping
+scene.setDialogScroll(99999);
+check('scroll clamps to max', scene.dialogScroll === scene.dialogScrollMax);
+scene.setDialogScroll(-40);
+check('scroll clamps to 0', scene.dialogScroll === 0);
+scene.setDialogScroll(60);
+check('scroll offset moves content up', Math.abs(scene.dialogContent.y - (-60)) < 0.01);
+// footer pinned strictly at the bottom: last visible choice bottom edge = 1054
+const lastChoice = [...scene.dialogChoices].reverse().find((c) => c.container.visible);
+check('response buttons pinned to dialog bottom', Math.abs((lastChoice.container.y + 32) - 1054) < 0.01);
+// text never overflows the body: content is clipped by the 180px mask rect
+const contentBottomWorld = scene.dialogText.y + scene.dialogText.height + 6 * 52;
+check('long quest text stays inside masked body (clipped)', contentBottomWorld - 592 > 180 && scene.dialogBodyMaxH === 180);
 scene.closeDialog();
 await new Promise((r) => setTimeout(r, 300));
 check('dialog closes', scene.dialogVisible === false);

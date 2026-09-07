@@ -163,28 +163,174 @@ export function buildExtraTextures(scene) {
         ctx.fill();
     });
 
-    // Stone garden platform grounding the grid (carved manor courtyard)
-    canvasTex(scene, 'platform', 936, 540, (ctx, w, h) => {
-        const cx = w / 2, cy = h / 2, rx = w / 2 - 6, ry = h / 2 - 6;
-        ctx.save();
-        ctx.shadowColor = 'rgba(0,0,0,0.6)';
-        ctx.shadowBlur = 30;
-        ctx.shadowOffsetY = 16;
-        diamondPath(ctx, cx, cy, rx, ry);
-        ctx.fillStyle = '#171529';
-        ctx.fill();
-        ctx.restore();
+    // Linh Đảo Phù Vân — the floating celestial stone island carrying the grid.
+    // The top diamond keeps the original geometry (center 468,270; rx 462,
+    // ry 264) so the 6x6 tile alignment is unchanged; the texture grows
+    // downward (936x660) to add the 2.5D rocky underside that hangs over
+    // the water. A separate 'island_shadow' sprite is the soft shadow the
+    // island casts on the water below.
+    canvasTex(scene, 'platform', 936, 660, (ctx, w, h) => {
+        const cx = 468, cy = 270, rx = 462, ry = 264;
 
-        // raised golden rim
-        diamondPath(ctx, cx, cy + 8, rx, ry);
+        // seeded noise so the render is stable across runs/tests
+        let seed = 20260907;
+        const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+
+        /* --- celestial under-glow (painted first, behind the rock) --- */
+        const underGlow = ctx.createRadialGradient(cx, cy + ry + 96, 24, cx, cy + ry + 96, 340);
+        underGlow.addColorStop(0, 'rgba(158,128,255,0.32)');
+        underGlow.addColorStop(0.55, 'rgba(110,220,255,0.14)');
+        underGlow.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = underGlow;
+        ctx.fillRect(0, cy + ry - 60, w, 420);
+
+        /* --- jagged rock mass hanging below the lower diamond edges --- */
+        // Boundary: left corner (cx-rx, cy) -> bottom (cx, cy+ry) -> right corner
+        // (cx+rx, cy), each point extended downward by a depth profile that is
+        // shallow near the corners and deepest under the middle.
+        const rock = [];
+        const SEG = 13;
+        for (let i = 0; i <= SEG * 2; i++) {
+            const s = i / (SEG * 2); // 0 = left corner, 1 = right corner
+            let bx, by;
+            if (s <= 0.5) {
+                const t = s / 0.5;
+                bx = (cx - rx) + rx * t;
+                by = cy + ry * t;
+            } else {
+                const t = (s - 0.5) / 0.5;
+                bx = cx + rx * t;
+                by = (cy + ry) - ry * t;
+            }
+            const bell = Math.pow(Math.sin(Math.PI * s), 0.75); // deepest mid-span
+            const depth = 26 + bell * 118 + rnd() * 26;
+            rock.push([bx, by + depth]);
+        }
+        const rockPath = () => {
+            ctx.beginPath();
+            ctx.moveTo(cx - rx, cy);
+            for (const [px, py] of rock) ctx.lineTo(px, py);
+            ctx.lineTo(cx + rx, cy);
+            ctx.closePath();
+        };
+
+        // rock body gradient
+        const rockGrad = ctx.createLinearGradient(0, cy + ry * 0.4, 0, cy + ry + 170);
+        rockGrad.addColorStop(0, '#42365e');
+        rockGrad.addColorStop(0.45, '#2b2344');
+        rockGrad.addColorStop(1, '#141021');
+        rockPath();
+        ctx.fillStyle = rockGrad;
+        ctx.fill();
+
+        // strata lines + speckle (clipped to the rock)
+        ctx.save();
+        rockPath();
+        ctx.clip();
+        ctx.strokeStyle = 'rgba(12,8,24,0.55)';
+        ctx.lineWidth = 5;
+        for (let i = 0; i < 4; i++) {
+            const yBase = cy + ry * 0.55 + i * 44;
+            ctx.beginPath();
+            ctx.moveTo(cx - rx, yBase + 26);
+            ctx.quadraticCurveTo(cx, yBase - 18, cx + rx, yBase + 26);
+            ctx.stroke();
+        }
+        ctx.fillStyle = 'rgba(200,180,255,0.10)';
+        for (let i = 0; i < 70; i++) {
+            const t = rnd() * 2 - 1;
+            const px = cx + t * (rx - 24);
+            const py = cy + ry * 0.5 + rnd() * 150;
+            ctx.beginPath();
+            ctx.ellipse(px, py, 1.5 + rnd() * 3, 1 + rnd() * 2, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        // celestial rim light along the bottom edge
+        ctx.restore();
+        ctx.strokeStyle = 'rgba(190,160,255,0.22)';
+        ctx.lineWidth = 4;
+        rockPath();
+        ctx.stroke();
+
+        /* --- glowing spirit runes on the rock face --- */
+        const runes = [
+            [cx - rx * 0.62, cy + ry * 0.78, '#7ff7ff'],
+            [cx - rx * 0.22, cy + ry + 74, '#c9a6ff'],
+            [cx + rx * 0.18, cy + ry + 92, '#7ff7ff'],
+            [cx + rx * 0.58, cy + ry * 0.82, '#c9a6ff'],
+        ];
+        for (const [px, py, color] of runes) {
+            const g = ctx.createRadialGradient(px, py, 1, px, py, 26);
+            g.addColorStop(0, color);
+            g.addColorStop(0.4, 'rgba(160,225,255,0.35)');
+            g.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(px, py, 26, 0, Math.PI * 2);
+            ctx.fill();
+            // tiny diamond glyph
+            ctx.fillStyle = 'rgba(255,255,255,0.9)';
+            ctx.beginPath();
+            ctx.moveTo(px, py - 7);
+            ctx.lineTo(px + 5, py);
+            ctx.lineTo(px, py + 7);
+            ctx.lineTo(px - 5, py);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        /* --- hanging jade vines from the lower edges --- */
+        ctx.strokeStyle = '#2c5a44';
+        ctx.lineWidth = 3.5;
+        for (let i = 0; i < 5; i++) {
+            const s = 0.14 + (i / 4) * 0.72 + (rnd() - 0.5) * 0.05;
+            let bx, by;
+            if (s <= 0.5) {
+                const t = s / 0.5;
+                bx = (cx - rx) + rx * t;
+                by = cy + ry * t;
+            } else {
+                const t = (s - 0.5) / 0.5;
+                bx = cx + rx * t;
+                by = (cy + ry) - ry * t;
+            }
+            const len = 34 + rnd() * 58;
+            const sway = (rnd() - 0.5) * 30;
+            ctx.beginPath();
+            ctx.moveTo(bx, by + 6);
+            ctx.quadraticCurveTo(bx + sway, by + len * 0.6, bx + sway * 0.4, by + len);
+            ctx.stroke();
+            ctx.fillStyle = '#3d9e5f';
+            for (let j = 1; j <= 3; j++) {
+                const lt = j / 3;
+                const lx = bx + sway * 2 * lt * (1 - lt) + sway * 0.4 * lt;
+                const ly = by + 6 + (len - 6) * lt;
+                ctx.beginPath();
+                ctx.ellipse(lx, ly, 6, 3, lt * 2 - 1, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        /* --- carved stone slab edge below the top surface (2.5D thickness) --- */
+        ctx.save();
+        ctx.shadowColor = 'rgba(0,0,0,0.55)';
+        ctx.shadowBlur = 22;
+        ctx.shadowOffsetY = 10;
+        diamondPath(ctx, cx, cy + 18, rx, ry);
         ctx.fillStyle = '#4d3413';
         ctx.fill();
-        const g = ctx.createLinearGradient(cx, cy - ry, cx, cy + ry);
-        g.addColorStop(0, '#3b6370');
-        g.addColorStop(0.5, '#274550');
-        g.addColorStop(1, '#152b33');
+        ctx.restore();
+        diamondPath(ctx, cx, cy + 10, rx, ry);
+        ctx.fillStyle = '#6a4a1c';
+        ctx.fill();
+
+        /* --- jade-stone top surface (unchanged geometry) --- */
+        const g2 = ctx.createLinearGradient(cx, cy - ry, cx, cy + ry);
+        g2.addColorStop(0, '#3b6370');
+        g2.addColorStop(0.5, '#274550');
+        g2.addColorStop(1, '#152b33');
         diamondPath(ctx, cx, cy, rx, ry);
-        ctx.fillStyle = g;
+        ctx.fillStyle = g2;
         ctx.fill();
 
         // inner sheen (water-light reflection)
@@ -199,16 +345,16 @@ export function buildExtraTextures(scene) {
         // stone specks
         ctx.fillStyle = 'rgba(255,255,255,0.07)';
         for (let i = 0; i < 90; i++) {
-            const t = Math.random() * 2 - 1;
-            const u = Math.random() * 2 - 1;
+            const t = rnd() * 2 - 1;
+            const u = rnd() * 2 - 1;
             const px = cx + t * (rx - 30);
             const py = cy + u * (ry - 30) - Math.abs(t) * 20;
             ctx.beginPath();
-            ctx.ellipse(px, py, 2 + Math.random() * 4, 1.2 + Math.random() * 2.2, 0, 0, Math.PI * 2);
+            ctx.ellipse(px, py, 2 + rnd() * 4, 1.2 + rnd() * 2.2, 0, 0, Math.PI * 2);
             ctx.fill();
         }
 
-        // carved border
+        // carved golden borders
         ctx.strokeStyle = '#d8a24e';
         ctx.lineWidth = 7;
         diamondPath(ctx, cx, cy, rx - 4, ry - 4);
@@ -221,6 +367,23 @@ export function buildExtraTextures(scene) {
         ctx.lineWidth = 2;
         diamondPath(ctx, cx, cy, rx - 42, ry - 42);
         ctx.stroke();
+    });
+
+    // Soft elliptical shadow the floating island casts on the water.
+    // Scene draws it at alpha ~0.45 beneath the island.
+    canvasTex(scene, 'island_shadow', 512, 160, (ctx, w, h) => {
+        ctx.save();
+        ctx.translate(w / 2, h / 2);
+        ctx.scale(1, h / w);
+        const g = ctx.createRadialGradient(0, 0, 10, 0, 0, w / 2);
+        g.addColorStop(0, 'rgba(3,6,20,1)');
+        g.addColorStop(0.55, 'rgba(3,6,20,0.55)');
+        g.addColorStop(1, 'rgba(3,6,20,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(0, 0, w / 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
     });
 }
 
@@ -416,6 +579,9 @@ export function ensureFallbackTextures(scene) {
     if (!scene.textures.exists('npc_tien_nu')) {
         drawNpcTienNuFallback(scene);
     }
+    if (!scene.textures.exists('npc_tien_nu_portrait')) {
+        drawNpcTienNuPortraitFallback(scene);
+    }
     if (!scene.textures.exists('icon_sickle')) {
         drawSickleIconFallback(scene);
     }
@@ -499,6 +665,65 @@ function drawRareFlowerFallback(scene) {
             ctx.arc(cx + Math.cos(angle) * r, cy + Math.sin(angle) * r, 2.5, 0, Math.PI * 2);
             ctx.fill();
         }
+    });
+}
+
+/**
+ * NPC portrait (dialog header) — head-and-shoulders crop of the fairy,
+ * used if npc_tien_nu_portrait.png fails to load.
+ */
+function drawNpcTienNuPortraitFallback(scene) {
+    canvasTex(scene, 'npc_tien_nu_portrait', 256, 256, (ctx, w, h) => {
+        const cx = w / 2, cy = h * 0.58;
+        // aura
+        const glow = ctx.createRadialGradient(cx, cy - 20, 8, cx, cy - 20, 130);
+        glow.addColorStop(0, 'rgba(200,230,255,0.5)');
+        glow.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = glow;
+        ctx.fillRect(0, 0, w, h);
+        // shoulders / robe
+        const robe = ctx.createLinearGradient(cx, cy, cx, h);
+        robe.addColorStop(0, '#dceafc');
+        robe.addColorStop(1, '#8bb8e8');
+        ctx.fillStyle = robe;
+        ctx.beginPath();
+        ctx.moveTo(cx - 96, h);
+        ctx.quadraticCurveTo(cx - 70, cy + 18, cx - 26, cy + 10);
+        ctx.quadraticCurveTo(cx, cy + 4, cx + 26, cy + 10);
+        ctx.quadraticCurveTo(cx + 70, cy + 18, cx + 96, h);
+        ctx.closePath();
+        ctx.fill();
+        // lavender ribbon over the shoulder
+        ctx.strokeStyle = '#c9a6ff';
+        ctx.lineWidth = 10;
+        ctx.beginPath();
+        ctx.moveTo(cx - 60, h - 20);
+        ctx.quadraticCurveTo(cx - 10, cy + 34, cx + 64, h - 6);
+        ctx.stroke();
+        // head
+        const head = ctx.createRadialGradient(cx - 6, cy - 42, 6, cx, cy - 30, 34);
+        head.addColorStop(0, '#f6eee0');
+        head.addColorStop(1, '#cdbba4');
+        ctx.fillStyle = head;
+        ctx.beginPath();
+        ctx.arc(cx, cy - 30, 32, 0, Math.PI * 2);
+        ctx.fill();
+        // hair
+        ctx.fillStyle = '#2a1a3e';
+        ctx.beginPath();
+        ctx.moveTo(cx - 34, cy - 30);
+        ctx.quadraticCurveTo(cx - 38, cy - 78, cx, cy - 80);
+        ctx.quadraticCurveTo(cx + 38, cy - 78, cx + 34, cy - 30);
+        ctx.quadraticCurveTo(cx + 20, cy - 52, cx, cy - 50);
+        ctx.quadraticCurveTo(cx - 20, cy - 52, cx - 34, cy - 30);
+        ctx.fill();
+        // jade hairpin
+        ctx.strokeStyle = '#7dffc4';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(cx + 12, cy - 66);
+        ctx.lineTo(cx + 40, cy - 56);
+        ctx.stroke();
     });
 }
 

@@ -4,7 +4,7 @@ import { SEED_CATALOG, SEED_BY_ID, normalizeText } from '../data/seedCatalog.js'
 import { buildExtraTextures, ensureFallbackTextures } from '../vfx/TextureFactory.js';
 import AudioManager from '../audio/AudioManager.js';
 import { EconomySystem, SEED_RARITY } from '../systems/EconomySystem.js';
-import { DialogSystem } from '../systems/DialogSystem.js';
+import { DialogSystem, DIALOG_FONT } from '../systems/DialogSystem.js';
 
 const W = 1080;
 const H = 1920;
@@ -34,8 +34,31 @@ const D = { TILES: 910, PETALS: 1080, CHIP: 90, BAR: 120, DRAWER: 1200, MODAL: 1
 const SEED_CHIME_BASE = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5, 1174.66, 1318.51, 1567.98, 1760.0];
 const PENTATONIC_WATER_BASE = 1046.5;
 
-/* Touch zone radius for action buttons (172px = 108px button + 64px padding) */
+/* Touch zone radius for action buttons — generous invisible hitbox
+   (172px radius: 86px visible button + 86px invisible padding). */
 const TOUCH_ZONE_RADIUS = 172;
+
+/* Bottom action buttons: sleek ~20% smaller visuals (86px ring vs the
+   original 108px), with micro-animations (idle breathing + press feedback). */
+const BTN_VISUAL_RADIUS = 86;
+const BTN_INNER_RADIUS = 77;
+const BTN_Y = 1780;
+
+/* NPC Tiên Nữ Hoa Giang — bottom-right lower bridge deck, facing left
+   toward the grid. */
+const NPC_POS = { x: 890, y: 1345 };
+const NPC_FLOAT_AMP = 4; // sinusoidal idle float: yoyo -4px..+4px
+
+/* Khung Thoại (dialog) layout — three distinct vertical sections.
+   Panel spans (60,400)-(1020,1080):
+   - HEADER 400..572 : portrait + title
+   - BODY   592..772 : quest-list container, max-height 180px, masked + scroll
+   - FOOTER 792..1080: response buttons pinned strictly to the bottom        */
+const DLG = {
+    x: 60, y: 400, w: W - 120, h: 680,
+    bodyTop: 592, bodyMaxH: 180,
+    footerBottom: 1054, btnH: 64, btnGap: 16,
+};
 
 /* Gesture thresholds */
 const SWIPE_THRESHOLD = 60;      // min px to register a swipe
@@ -60,6 +83,11 @@ export default class GardenScene extends Phaser.Scene {
         this.dialog = null;
         this.npcActive = false;
         this.dialogVisible = false;
+        // Dialog scroll state (body section)
+        this.dialogScroll = 0;
+        this.dialogScrollMax = 0;
+        this.dialogDragging = null;
+        this.questRowContainers = [];
         // Gesture state
         this.gestureActive = false;
         this.gestureStartX = 0;
@@ -87,6 +115,7 @@ export default class GardenScene extends Phaser.Scene {
             'icon_sickle',
             'icon_spirit_stone',
             'npc_tien_nu',
+            'npc_tien_nu_portrait',
             'bridge_pavilion',
         ];
         for (const a of assets) {
@@ -143,58 +172,76 @@ export default class GardenScene extends Phaser.Scene {
 
         this.updateHint();
         this.updateHud();
+        this.setupDialogInput();
     }
 
-    /* ====================== PLATFORM (grounding the grid) ====================== */
+    /* ============ LINH ĐẢO PHÙ VÂN — floating celestial stone island ============ */
     createPlatform() {
-        this.platform = this.add.image(540, 1110, 'platform')
+        // Soft shadow the island casts on the water beneath it (~0.45 alpha),
+        // with a slow shimmer as the water moves.
+        this.islandShadow = this.add.image(540, 1452, 'island_shadow')
+            .setDisplaySize(700, 172)
+            .setAlpha(0.45)
+            .setDepth(-70);
+        this.tweens.add({
+            targets: this.islandShadow,
+            alpha: { from: 0.41, to: 0.48 },
+            duration: 3400,
+            yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+        });
+
+        // The island: texture 936x660 whose TOP diamond center sits at texture
+        // (468, 270). The image is offset so that diamond center lands exactly
+        // on the grid center (540, 1110) — tile alignment is unchanged, and the
+        // rocky 2.5D underside hangs over the water below.
+        const texH = 660, texCy = 270;
+        this.platform = this.add.image(540, 1110 + (texH / 2 - texCy) * 0.82, 'platform')
             .setDepth(-60)
-            .setScale(0.82)
-            .setAlpha(0.96);
-        this.add.image(540, 1112, 'glow').setTint(0x2c8ea8).setAlpha(0.12).setScale(4.0, 2.2).setDepth(-59);
+            .setScale(0.82);
+        // celestial aura around the island
+        this.add.image(540, 1180, 'glow').setTint(0x8f7ae0).setAlpha(0.12).setScale(5.4, 3.0).setDepth(-59);
+        // island name, resting on the shadow like a reflection
+        this.add.text(540, 1452, '· Linh Đảo Phù Vân ·', {
+            fontFamily: DIALOG_FONT, fontSize: '24px', color: '#cfc0ff', fontStyle: 'italic',
+            stroke: '#160f2e', strokeThickness: 5,
+        }).setOrigin(0.5).setDepth(-58).setAlpha(0.9);
     }
 
     /* ====================== BRIDGE + NPC ====================== */
     createBridgeAndNpc() {
-        // Bridge/pavilion decoration above the grid
+        // Bridge/pavilion decoration on the upper bridge deck
         this.bridgeSprite = this.add.image(180, 780, 'bridge_pavilion')
             .setDisplaySize(280, 210)
             .setDepth(D.NPC - 10)
-            .setAlpha(0.9);
+            .setAlpha(0.92);
 
-        // NPC: Tiên Nữ Hoa Giang — standing on stone path/bridge, scaled to 0.8
-        this.npcGroup = this.add.container(220, 780).setDepth(D.NPC);
-        const npcSprite = this.add.image(0, -40, 'npc_tien_nu')
-            .setDisplaySize(205, 307);
-        // NPC glow aura
-        const npcGlow = this.add.image(0, -20, 'glow')
-            .setTint(0xc9dff8).setAlpha(0.25).setScale(1.8, 2.2);
-        // Name tag
-        const npcName = this.add.text(0, 120, 'Tiên Nữ Hoa Giang', {
-            fontFamily: 'Georgia, serif', fontSize: '20px', color: '#c9dff8',
+        // NPC: Tiên Nữ Hoa Giang — hovering above the bottom-right LOWER bridge
+        // deck (x: 890, y: 1345), body facing left toward the garden grid.
+        // The sprite is the elegant flying fairy with flowing lavender ribbons
+        // (clean 4-channel PNG with true alpha — no faux background).
+        this.npcGroup = this.add.container(NPC_POS.x, NPC_POS.y).setDepth(D.NPC);
+        const npcSprite = this.add.image(0, -44, 'npc_tien_nu')
+            .setDisplaySize(344, 274);
+        // soft celestial aura
+        const npcGlow = this.add.image(0, -44, 'glow')
+            .setTint(0xc9b2ff).setAlpha(0.25).setScale(2.4, 2.1);
+        // name tag
+        const npcName = this.add.text(0, 132, 'Tiên Nữ Hoa Giang', {
+            fontFamily: DIALOG_FONT, fontSize: '22px', color: '#dce8ff',
             align: 'center', stroke: '#1b1140', strokeThickness: 4,
         }).setOrigin(0.5);
-        // Interaction zone
-        const npcZone = this.add.zone(0, -10, 180, 320).setInteractive();
+        // interaction zone (generous, covers sprite + ribbons)
+        const npcZone = this.add.zone(0, -20, 400, 360).setInteractive();
         npcZone.on('pointerdown', () => this.onNpcClick());
 
         this.npcGroup.add([npcGlow, npcSprite, npcName, npcZone]);
 
-        // Breathing / float idle animation
-        this.tweens.add({
+        // Smooth sinusoidal idle floating: yoyo between -4px and +4px around
+        // the deck anchor — she never touches the stone, she hovers.
+        this.npcFloatTween = this.tweens.add({
             targets: this.npcGroup,
-            y: { from: 774, to: 786 },
-            duration: 2800,
-            yoyo: true,
-            repeat: -1,
-            ease: 'Sine.easeInOut',
-        });
-        // gentle scale breathing
-        this.tweens.add({
-            targets: npcSprite,
-            scaleX: { from: 0.99, to: 1.01 },
-            scaleY: { from: 1.0, to: 1.02 },
-            duration: 3200,
+            y: { from: NPC_POS.y - NPC_FLOAT_AMP, to: NPC_POS.y + NPC_FLOAT_AMP },
+            duration: 1500,
             yoyo: true,
             repeat: -1,
             ease: 'Sine.easeInOut',
@@ -202,90 +249,209 @@ export default class GardenScene extends Phaser.Scene {
         // aura pulse
         this.tweens.add({
             targets: npcGlow,
-            alpha: { from: 0.15, to: 0.35 },
-            scale: { from: 1.6, to: 2.0 },
+            alpha: { from: 0.16, to: 0.34 },
+            scale: { from: 2.2, to: 2.6 },
             duration: 2400,
             yoyo: true,
             repeat: -1,
             ease: 'Sine.easeInOut',
         });
+        // faint spirit motes drifting up from her ribbons
+        this.npcSparkles = this.add.particles(0, 0, 'spark', {
+            x: { min: NPC_POS.x - 150, max: NPC_POS.x + 150 },
+            y: { min: NPC_POS.y - 160, max: NPC_POS.y + 40 },
+            speedY: { min: -20, max: -8 },
+            speedX: { min: -8, max: 8 },
+            lifespan: 2800,
+            scale: { start: 0.32, end: 0 },
+            alpha: { start: 0.5, end: 0 },
+            tint: [0xd8c3ff, 0x9fd8ff, 0xffe9c4],
+            frequency: 460,
+            blendMode: Phaser.BlendModes.ADD,
+        }).setDepth(D.NPC + 5);
     }
 
     onNpcClick() {
         this.audio.ensure();
         this.audio.chime(880, { gain: 0.06 });
-        // Update dialog state from game state
+        // Update dialog state from game state (live economy stats feed the
+        // quest-list progress counters in the dialog body).
         this.dialog.updateQuestState({
             hasFirstBloom: this.bloomCount >= 1,
-            totalBlooms: this.bloomCount,
+            totalBlooms: this.economy.stats.totalBlooms,
             currentBlooms: this.tiles.flat().filter(t => t.gridData.state === STATE.BLOOMING).length,
             hasRareSeed: (this.selectedSeed?.id === 'flower_rare_nguyet_cuc') ||
                          this.economy.getInventoryCount('flower_rare_nguyet_cuc') > 0,
             spiritStones: this.economy.spiritStones,
             completedQuests: this.economy.completedQuests,
+            maxSimultaneousBlooms: this.economy.stats.maxSimultaneousBlooms,
+            totalStonesEarned: this.economy.stats.totalStonesEarned,
+            rareBlooms: this.economy.stats.rareBlooms,
+            totalHarvests: this.economy.stats.totalHarvests,
         });
         this.openDialog();
     }
 
-    /* ============================ DIALOG BOX ============================ */
+    /* ============================ DIALOG BOX (KHUNG THOẠI) ============================
+       Three distinct vertical sections:
+       - HEADER : clean portrait + title (name / role) + close button
+       - BODY   : quest-list container, max-height 180px, masked + scrollable
+                  (drag or wheel) so text NEVER overflows into the footer
+       - FOOTER : response buttons pinned strictly at the panel bottom           */
     createDialogBox() {
         this.dialogBox = this.add.container(0, 0).setDepth(D.DIALOG).setVisible(false);
 
         // Dimmed backdrop
-        const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x05030c, 0.5).setInteractive();
+        const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x05030c, 0.55).setInteractive();
         dim.on('pointerdown', () => this.closeDialog());
 
-        // Dialog panel
+        /* ---- panel ---- */
         const panel = this.add.graphics();
         panel.fillStyle(C.panelDeep, 0.97);
         panel.lineStyle(4, C.gold, 1);
-        panel.fillRoundedRect(60, 320, W - 120, 440, 28);
-        panel.strokeRoundedRect(60, 320, W - 120, 440, 28);
+        panel.fillRoundedRect(DLG.x, DLG.y, DLG.w, DLG.h, 28);
+        panel.strokeRoundedRect(DLG.x, DLG.y, DLG.w, DLG.h, 28);
         panel.lineStyle(2, 0xffe3a0, 0.3);
-        panel.strokeRoundedRect(80, 340, W - 160, 400, 22);
+        panel.strokeRoundedRect(DLG.x + 20, DLG.y + 20, DLG.w - 40, DLG.h - 40, 22);
 
-        // NPC portrait frame
+        /* ---- HEADER (400..572): portrait + title ---- */
         const portraitFrame = this.add.graphics();
         portraitFrame.fillStyle(0x241540, 0.95);
         portraitFrame.lineStyle(3, 0xc9dff8, 0.9);
-        portraitFrame.fillRoundedRect(100, 350, 160, 180, 16);
-        portraitFrame.strokeRoundedRect(100, 350, 160, 180, 16);
-
-        this.dialogPortrait = this.add.image(180, 430, 'npc_tien_nu').setDisplaySize(130, 195);
-        this.dialogName = this.add.text(290, 370, 'Tiên Nữ Hoa Giang', {
-            fontFamily: 'Georgia, serif', fontSize: '28px', color: '#c9dff8', fontStyle: 'bold',
+        portraitFrame.fillRoundedRect(96, 424, 128, 128, 16);
+        portraitFrame.strokeRoundedRect(96, 424, 128, 128, 16);
+        this.dialogPortrait = this.add.image(160, 488, 'npc_tien_nu_portrait').setDisplaySize(108, 108);
+        this.dialogName = this.add.text(248, 442, 'Tiên Nữ Hoa Giang', {
+            fontFamily: DIALOG_FONT, fontSize: '30px', color: '#c9dff8', fontStyle: 'bold',
             stroke: '#1b1140', strokeThickness: 5,
         });
-        this.dialogText = this.add.text(290, 420, '', {
-            fontFamily: 'Georgia, serif', fontSize: '26px', color: '#e6d8ff',
-            wordWrap: { width: W - 440 }, lineSpacing: 8,
+        this.dialogRole = this.add.text(250, 490, 'Người trấn giữ cầu kiều · Linh Đảo Phù Vân', {
+            fontFamily: DIALOG_FONT, fontSize: '20px', color: '#b9a3dd',
+            stroke: '#1b1140', strokeThickness: 4,
         });
-
-        // Choice buttons container
-        this.dialogChoices = [];
-        for (let i = 0; i < 4; i++) {
-            const btn = this.add.container(0, 0);
-            const bg = this.add.graphics();
-            bg.fillStyle(0x2a1c4a, 0.95);
-            bg.lineStyle(2, C.gold, 0.8);
-            const text = this.add.text(0, 0, '', {
-                fontFamily: 'Georgia, serif', fontSize: '24px', color: '#ffe9c4',
-            }).setOrigin(0, 0.5);
-            const zone = this.add.zone(0, 0, 600, 52).setInteractive();
-            zone.on('pointerdown', () => this.onDialogChoice(i));
-            btn.add([bg, text, zone]);
-            btn.setVisible(false);
-            this.dialogChoices.push({ container: btn, bg, text, zone });
-        }
-
-        // Close button
-        const closeBtn = this.add.text(W - 100, 340, '✕', {
-            fontFamily: 'Arial', fontSize: '36px', color: '#ffb0b0',
+        const closeBtn = this.add.text(964, 438, '✕', {
+            fontFamily: DIALOG_FONT, fontSize: '34px', color: '#ffb0b0',
         }).setOrigin(0.5).setInteractive();
         closeBtn.on('pointerdown', () => this.closeDialog());
+        const divider = this.add.graphics();
+        divider.lineStyle(2, C.gold, 0.55);
+        divider.lineBetween(96, 572, 984, 572);
+        divider.fillStyle(C.gold, 0.9);
+        divider.fillTriangle(540, 565, 549, 572, 540, 579);
+        divider.fillTriangle(540, 565, 531, 572, 540, 579);
 
-        this.dialogBox.add([dim, panel, portraitFrame, this.dialogPortrait, this.dialogName, this.dialogText, closeBtn]);
-        this.dialogChoices.forEach(c => this.dialogBox.add(c.container));
+        /* ---- BODY (592..772): scrollable, masked quest/text container ---- */
+        this.dialogBodyMaxH = DLG.bodyMaxH; // exposed for tests (max-height 180px)
+        this.dialogContent = this.add.container(0, 0);
+        this.dialogText = this.add.text(92, DLG.bodyTop, '', {
+            fontFamily: DIALOG_FONT, fontSize: '25px', color: '#e6d8ff',
+            wordWrap: { width: 888 }, lineSpacing: 9,
+        });
+        this.dialogContent.add(this.dialogText);
+
+        // geometry mask — everything outside 92,592 → 988,772 is clipped
+        const maskG = this.make.graphics();
+        maskG.fillStyle(0xffffff, 1);
+        maskG.fillRect(92, DLG.bodyTop, 896, DLG.bodyMaxH);
+        this.dialogBodyMask = maskG.createGeometryMask();
+        this.dialogContent.setMask(this.dialogBodyMask);
+
+        // soft fade at the body's bottom edge (signals clipped content)
+        this.dialogFade = this.add.graphics();
+        this.dialogFade.setVisible(false);
+        // scroll affordance
+        this.dialogScrollHint = this.add.text(980, 764, '⇕', {
+            fontFamily: DIALOG_FONT, fontSize: '24px', color: '#d8c3f2',
+        }).setOrigin(1, 0.5).setVisible(false);
+
+        // drag surface for scrolling the body
+        const bodyZone = this.add.zone(540, DLG.bodyTop + DLG.bodyMaxH / 2, 896, DLG.bodyMaxH).setInteractive();
+        bodyZone.on('pointerdown', (p) => {
+            this.dialogDragging = { y: p.y, from: this.dialogScroll };
+        });
+
+        /* ---- FOOTER: response buttons pinned strictly at the bottom ---- */
+        this.dialogChoices = [];
+        for (let i = 0; i < 4; i++) {
+            const btn = this.add.container(540, 0);
+            const bg = this.add.graphics();
+            const text = this.add.text(0, 0, '', {
+                fontFamily: DIALOG_FONT, fontSize: '24px', color: '#ffe9c4', fontStyle: 'bold',
+                stroke: '#1b1140', strokeThickness: 4,
+            }).setOrigin(0.5);
+            const zone = this.add.zone(0, 0, 660, DLG.btnH).setInteractive();
+            const descriptor = { container: btn, bg, text, zone, index: i, onClose: false };
+            zone.on('pointerdown', () => {
+                this.tweens.killTweensOf(btn);
+                btn.setScale(0.96);
+                this.tweens.add({ targets: btn, scale: 1, duration: 240, ease: 'Back.easeOut' });
+                if (descriptor.onClose) this.closeDialog();
+                else this.onDialogChoice(descriptor.index);
+            });
+            btn.add([bg, text, zone]);
+            btn.setVisible(false);
+            this.dialogChoices.push(descriptor);
+        }
+
+        this.dialogBox.add([
+            dim, panel, portraitFrame, this.dialogPortrait, this.dialogName, this.dialogRole,
+            closeBtn, divider, this.dialogContent, this.dialogFade, this.dialogScrollHint, bodyZone,
+        ]);
+        this.dialogChoices.forEach((c) => this.dialogBox.add(c.container));
+    }
+
+    /** Global drag/wheel handling for the dialog body scroll. */
+    setupDialogInput() {
+        this.input.on('pointermove', (p) => {
+            if (!this.dialogDragging || !this.dialogVisible) return;
+            this.setDialogScroll(this.dialogDragging.from + (this.dialogDragging.y - p.y));
+        });
+        this.input.on('pointerup', () => { this.dialogDragging = null; });
+        this.input.on('wheel', (p, over, dx, dy) => {
+            if (this.dialogVisible) this.setDialogScroll(this.dialogScroll + dy * 0.5);
+        });
+    }
+
+    /** Clamp + apply the body scroll offset and refresh fade/hint affordances. */
+    setDialogScroll(value) {
+        this.dialogScroll = Phaser.Math.Clamp(value, 0, this.dialogScrollMax);
+        this.dialogContent.y = -this.dialogScroll;
+        const canScroll = this.dialogScrollMax > 0;
+        const atEnd = this.dialogScroll >= this.dialogScrollMax - 0.5;
+        this.dialogFade.setVisible(canScroll && !atEnd);
+        this.dialogScrollHint.setVisible(canScroll);
+        if (canScroll && !atEnd) {
+            this.dialogFade.clear();
+            this.dialogFade.fillGradientStyle(0x181026, 0x181026, 0x181026, 0x181026, 0, 0, 1, 1);
+            this.dialogFade.fillRect(92, DLG.bodyTop + DLG.bodyMaxH - 36, 896, 36);
+        }
+    }
+
+    /** Build one quest-list row (status glyph · name · progress · reward). */
+    buildQuestRow(row, y) {
+        const c = this.add.container(92, y);
+        const status = this.add.text(10, 0, row.done ? '✓' : '◇', {
+            fontFamily: DIALOG_FONT, fontSize: '24px', color: row.done ? '#7dffb6' : '#d8a24e',
+        }).setOrigin(0.5);
+        const name = this.add.text(36, 0, row.name, {
+            fontFamily: DIALOG_FONT, fontSize: '23px', color: row.done ? '#9f93c9' : '#ffe9c4', fontStyle: 'bold',
+        }).setOrigin(0, 0.5);
+        const progress = this.add.text(660, 0, row.done ? 'hoàn thành' : `${row.progress}/${row.target}`, {
+            fontFamily: DIALOG_FONT, fontSize: '19px', color: row.done ? '#7dffb6' : '#b9a3dd',
+        }).setOrigin(1, 0.5);
+        const reward = this.add.text(884, 0, `+${row.reward} 💎`, {
+            fontFamily: DIALOG_FONT, fontSize: '21px', color: '#ffe9a8',
+        }).setOrigin(1, 0.5);
+        const line = this.add.graphics();
+        line.lineStyle(1, C.gold, 0.18);
+        line.lineBetween(0, 26, 856, 26);
+        c.add([line, status, name, progress, reward]);
+        return c;
+    }
+
+    clearQuestRows() {
+        for (const row of this.questRowContainers) row.destroy();
+        this.questRowContainers = [];
     }
 
     openDialog() {
@@ -299,6 +465,7 @@ export default class GardenScene extends Phaser.Scene {
 
     closeDialog() {
         this.dialogVisible = false;
+        this.dialogDragging = null;
         this.tweens.add({
             targets: this.dialogBox, alpha: 0, duration: 180,
             onComplete: () => this.dialogBox.setVisible(false),
@@ -306,26 +473,45 @@ export default class GardenScene extends Phaser.Scene {
     }
 
     renderDialogNode(node) {
+        /* ---- BODY ---- */
+        this.clearQuestRows();
         this.dialogText.setText(node.text);
-        // Layout choice buttons
-        let y = 600;
-        this.dialogChoices.forEach((c, i) => {
-            if (i < node.choices.length) {
-                c.container.setVisible(true).setPosition(300, y);
-                c.text.setText(node.choices[i].text);
-                // Redraw bg to fit text
-                const tw = Math.min(c.text.width + 40, 580);
-                c.bg.clear();
-                c.bg.fillStyle(0x2a1c4a, 0.95);
-                c.bg.lineStyle(2, C.gold, 0.8);
-                c.bg.fillRoundedRect(-10, -24, tw + 20, 48, 12);
-                c.bg.strokeRoundedRect(-10, -24, tw + 20, 48, 12);
-                c.zone.setSize(tw + 20, 48);
-                c.zone.setPosition(tw / 2, 0);
-                y += 56;
-            } else {
-                c.container.setVisible(false);
+        let contentBottom = this.dialogText.y + this.dialogText.height;
+        if (node.questList) {
+            let ry = this.dialogText.y + this.dialogText.height + 16;
+            for (const row of this.dialog.getQuestRows()) {
+                const rowContainer = this.buildQuestRow(row, ry);
+                this.dialogContent.add(rowContainer);
+                this.questRowContainers.push(rowContainer);
+                ry += 52;
             }
+            contentBottom = ry - 8;
+        }
+        // anything taller than 180px becomes scrollable instead of overflowing
+        this.dialogScrollMax = Math.max(0, Math.ceil(contentBottom - DLG.bodyTop - DLG.bodyMaxH));
+        this.setDialogScroll(0);
+
+        /* ---- FOOTER: choices pinned bottom-up (last button flush at 1054) ---- */
+        const choices = (node.choices && node.choices.length)
+            ? node.choices
+            : [{ text: 'Đóng ✦', close: true }];
+        this.dialogChoices.forEach((c, i) => {
+            const choice = choices[i];
+            if (!choice) {
+                c.container.setVisible(false);
+                c.onClose = false;
+                return;
+            }
+            c.onClose = !!choice.close;
+            const slot = choices.length - 1 - i; // 0 = bottom-most button
+            const y = DLG.footerBottom - DLG.btnH / 2 - slot * (DLG.btnH + DLG.btnGap);
+            c.container.setVisible(true).setPosition(540, y);
+            c.text.setText(choice.text);
+            c.bg.clear();
+            c.bg.fillStyle(c.onClose ? 0x1f1636 : 0x2a1c4a, 0.96);
+            c.bg.lineStyle(3, c.onClose ? 0x8f7ae0 : C.gold, 0.9);
+            c.bg.fillRoundedRect(-330, -DLG.btnH / 2, 660, DLG.btnH, 32);
+            c.bg.strokeRoundedRect(-330, -DLG.btnH / 2, 660, DLG.btnH, 32);
         });
     }
 
@@ -579,8 +765,8 @@ export default class GardenScene extends Phaser.Scene {
         this.seedCards = SEED_CATALOG.map((seed, i) => this.createSeedCard(seed, i));
         this.seedCards.forEach((c) => this.drawer.add(c.container));
 
-        // selected-seed chip
-        this.selectedChip = this.add.container(540, 1435).setDepth(D.CHIP).setVisible(false);
+        // selected-seed chip (below the island shadow, above the action bar)
+        this.selectedChip = this.add.container(540, 1585).setDepth(D.CHIP).setVisible(false);
         const chipBg = this.add.graphics();
         chipBg.fillStyle(0x241540, 0.95);
         chipBg.lineStyle(3, C.gold, 0.9);
@@ -821,86 +1007,115 @@ export default class GardenScene extends Phaser.Scene {
         this.stoneValue.setText(`💎 ${this.spiritStones}`);
     }
 
-    /* ============================ ACTION BAR (with 172px touch zones) ============================ */
-    createActionBar() {
-        // --- Drawer button (left) ---
-        this.drawerBtn = this.add.container(160, 1780).setDepth(D.BAR);
-        const db = this.add.graphics();
-        const dbDraw = (hover) => {
-            db.clear();
-            db.fillStyle(0x241540, 0.96);
-            db.lineStyle(4, hover ? 0xffe3a0 : C.gold, 1);
-            db.fillCircle(0, 0, 108);
-            db.strokeCircle(0, 0, 108);
-            db.fillStyle(0x181026, 0.8);
-            db.fillCircle(0, 0, 96);
+    /* ============================ ACTION BAR ============================
+       3 buttons (Seeds · Ornate Sickle · Water Can), each:
+       - ~20% smaller visuals (86px ring vs the old 108px)
+       - generous invisible 172px-radius touch hitbox
+       - micro-animations: gentle floating idle breathing on the outer
+         container + responsive press feedback (0.9x down on pointerdown,
+         Back-ease bounce to 1.0x on pointerup) on the inner container.  */
+    makeActionButton({ x, baseColor, innerColor, hoverStroke, iconKey, iconW, iconH, label, labelColor, labelStroke, phase = 0, onTap }) {
+        // Outer: position + idle breathing. Inner: visuals + press feedback.
+        const outer = this.add.container(x, BTN_Y).setDepth(D.BAR);
+        const inner = this.add.container(0, 0);
+
+        const ring = this.add.graphics();
+        const drawRing = (hover) => {
+            ring.clear();
+            ring.fillStyle(baseColor, 0.96);
+            ring.lineStyle(4, hover ? C.goldLight : hoverStroke, 1);
+            ring.fillCircle(0, 0, BTN_VISUAL_RADIUS);
+            ring.strokeCircle(0, 0, BTN_VISUAL_RADIUS);
+            ring.fillStyle(innerColor, 0.8);
+            ring.fillCircle(0, 0, BTN_INNER_RADIUS);
         };
-        dbDraw(false);
-        const dbIcon = this.add.image(0, 0, 'icon_seed_drawer').setDisplaySize(150, 138);
-        const dbLabel = this.add.text(0, 128, 'Hạt Giống', {
-            fontFamily: 'Georgia, serif', fontSize: '22px', color: C.text, fontStyle: 'bold',
-            stroke: '#1b1140', strokeThickness: 5,
+        drawRing(false);
+
+        const icon = this.add.image(0, -5, iconKey).setDisplaySize(iconW, iconH);
+        const text = this.add.text(0, BTN_VISUAL_RADIUS + 20, label, {
+            fontFamily: DIALOG_FONT, fontSize: '21px', color: labelColor, fontStyle: 'bold',
+            stroke: labelStroke, strokeThickness: 5,
         }).setOrigin(0.5);
-        // 172px invisible touch zone (108px button + 64px padding)
-        const dbZone = this.add.zone(0, 0, TOUCH_ZONE_RADIUS * 2, TOUCH_ZONE_RADIUS * 2, 0xffffff, 0.001).setInteractive();
-        dbZone.on('pointerdown', () => {
-            this.audio.ensure();
-            if (this.drawerOpen) this.closeDrawer();
-            else this.openDrawer();
+
+        inner.add([ring, icon, text]);
+        outer.add(inner);
+
+        // Generous invisible touch hitbox — deliberately larger than the
+        // visible ring so nearby taps still register.
+        const zone = this.add.zone(0, 0, TOUCH_ZONE_RADIUS * 2, TOUCH_ZONE_RADIUS * 2).setInteractive();
+        outer.add(zone);
+
+        // Responsive press feedback: 0.9x on pointerdown, bounce to 1.0x on release.
+        let pressed = false;
+        const press = () => {
+            pressed = true;
+            this.tweens.killTweensOf(inner);
+            inner.setScale(1);
+            this.tweens.add({ targets: inner, scale: 0.9, duration: 70, ease: 'Quad.easeOut' });
+        };
+        const release = () => {
+            if (!pressed) return;
+            pressed = false;
+            this.tweens.killTweensOf(inner);
+            this.tweens.add({ targets: inner, scale: 1, duration: 320, ease: 'Back.easeOut' });
+        };
+        zone.on('pointerdown', () => { press(); onTap(); });
+        zone.on('pointerup', release);
+        zone.on('pointerout', release);
+        this.input.on('pointerup', release); // safety net if the pointer leaves the canvas
+        zone.on('pointerover', () => drawRing(true));
+        zone.on('pointerout', () => drawRing(false));
+
+        // Gentle floating idle breathing (slightly offset phase per button).
+        this.tweens.add({
+            targets: outer,
+            scale: { from: 1, to: 1.03 },
+            y: { from: BTN_Y, to: BTN_Y - 5 },
+            duration: 2000 + phase * 220,
+            yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+            delay: phase * 260,
         });
-        dbZone.on('pointerover', () => dbDraw(true));
-        dbZone.on('pointerout', () => dbDraw(false));
-        this.drawerBtn.add([db, dbIcon, dbLabel, dbZone]);
 
-        // --- Harvest All button (center) - Cổ Phong Sickle ---
-        this.harvestAllBtn = this.add.container(540, 1780).setDepth(D.BAR);
-        const hb = this.add.graphics();
-        const hbDraw = (hover) => {
-            hb.clear();
-            hb.fillStyle(0x3a2810, 0.96);
-            hb.lineStyle(4, hover ? 0xffe3a0 : C.gold, 1);
-            hb.fillCircle(0, 0, 108);
-            hb.strokeCircle(0, 0, 108);
-            hb.fillStyle(0x1a1008, 0.8);
-            hb.fillCircle(0, 0, 96);
-        };
-        hbDraw(false);
-        const hbIcon = this.add.image(0, 0, 'icon_sickle').setDisplaySize(140, 140);
-        const hbLabel = this.add.text(0, 128, 'Thu Hoạch ✦', {
-            fontFamily: 'Georgia, serif', fontSize: '22px', color: '#ffe9a8', fontStyle: 'bold',
-            stroke: '#3a2810', strokeThickness: 5,
-        }).setOrigin(0.5);
-        // 172px invisible touch zone
-        const hbZone = this.add.zone(0, 0, TOUCH_ZONE_RADIUS * 2, TOUCH_ZONE_RADIUS * 2, 0xffffff, 0.001).setInteractive();
-        hbZone.on('pointerdown', () => this.harvestAll());
-        hbZone.on('pointerover', () => hbDraw(true));
-        hbZone.on('pointerout', () => hbDraw(false));
-        this.harvestAllBtn.add([hb, hbIcon, hbLabel, hbZone]);
+        return { outer, inner, zone, ring, label: text, radius: BTN_VISUAL_RADIUS, hitRadius: TOUCH_ZONE_RADIUS, press, release };
+    }
 
-        // --- Water button (right) ---
-        this.waterBtn = this.add.container(920, 1780).setDepth(D.BAR);
-        const wb = this.add.graphics();
-        const wbDraw = (hover) => {
-            wb.clear();
-            wb.fillStyle(0x0e3a44, 0.96);
-            wb.lineStyle(4, hover ? 0xaef4ff : 0x00e5ff, 1);
-            wb.fillCircle(0, 0, 108);
-            wb.strokeCircle(0, 0, 108);
-            wb.fillStyle(0x082830, 0.8);
-            wb.fillCircle(0, 0, 96);
-        };
-        wbDraw(false);
-        const wbIcon = this.add.image(0, 0, 'icon_water_bucket').setDisplaySize(140, 140);
-        const wbLabel = this.add.text(0, 128, 'Tưới Nước', {
-            fontFamily: 'Georgia, serif', fontSize: '22px', color: '#aef4ff', fontStyle: 'bold',
-            stroke: '#0a2830', strokeThickness: 5,
-        }).setOrigin(0.5);
-        // 172px invisible touch zone
-        const wbZone = this.add.zone(0, 0, TOUCH_ZONE_RADIUS * 2, TOUCH_ZONE_RADIUS * 2, 0xffffff, 0.001).setInteractive();
-        wbZone.on('pointerdown', () => this.onWaterButton());
-        wbZone.on('pointerover', () => wbDraw(true));
-        wbZone.on('pointerout', () => wbDraw(false));
-        this.waterBtn.add([wb, wbIcon, wbLabel, wbZone]);
+    createActionBar() {
+        this.actionButtons = [
+            // --- Seeds drawer (left) ---
+            this.makeActionButton({
+                x: 160,
+                baseColor: 0x241540, innerColor: 0x181026, hoverStroke: C.gold,
+                iconKey: 'icon_seed_drawer', iconW: 118, iconH: 114,
+                label: 'Hạt Giống', labelColor: C.text, labelStroke: '#1b1140',
+                phase: 0,
+                onTap: () => {
+                    this.audio.ensure();
+                    if (this.drawerOpen) this.closeDrawer();
+                    else this.openDrawer();
+                },
+            }),
+            // --- Ornate sickle / harvest all (center) ---
+            this.makeActionButton({
+                x: 540,
+                baseColor: 0x3a2810, innerColor: 0x1a1008, hoverStroke: C.gold,
+                iconKey: 'icon_sickle', iconW: 114, iconH: 99,
+                label: 'Thu Hoạch ✦', labelColor: '#ffe9a8', labelStroke: '#3a2810',
+                phase: 1,
+                onTap: () => this.harvestAll(),
+            }),
+            // --- Water can (right) ---
+            this.makeActionButton({
+                x: 920,
+                baseColor: 0x0e3a44, innerColor: 0x082830, hoverStroke: 0x00e5ff,
+                iconKey: 'icon_water_bucket', iconW: 112, iconH: 111,
+                label: 'Tưới Nước', labelColor: '#aef4ff', labelStroke: '#0a2830',
+                phase: 2,
+                onTap: () => this.onWaterButton(),
+            }),
+        ];
+        this.drawerBtn = this.actionButtons[0];
+        this.harvestAllBtn = this.actionButtons[1];
+        this.waterBtn = this.actionButtons[2];
     }
 
     onWaterButton() {
@@ -908,7 +1123,7 @@ export default class GardenScene extends Phaser.Scene {
         const planted = this.tiles.flat().filter((t) => t.gridData.state !== STATE.EMPTY);
         if (planted.length === 0) {
             this.audio.click();
-            this.tweens.add({ targets: this.waterBtn, x: { from: 920, to: 928 }, yoyo: true, repeat: 2, duration: 60 });
+            this.tweens.add({ targets: this.waterBtn.outer, x: { from: 920, to: 928 }, yoyo: true, repeat: 2, duration: 60 });
             this.flashHint('Chưa có hạt nào được gieo — hãy chọn hoa và gieo trước ✧');
             return;
         }

@@ -316,3 +316,26 @@ if (bad) {
     process.exit(1);
 }
 console.log('all assets passed: 4-channel RGBA, true transparency, no keyed-screen residue');
+
+/* ---------------- Stage 1: premium soil tiles (public/assets/tiles/) ----------------
+   Generated on studio black; black-keyed with the soft ramp so the ember /
+   frost / aura glows keep their falloff, trimmed and fitted into the 128px
+   isometric footprint (height is free so the side thickness survives). */
+const TILES_OUT = 'public/assets/tiles';
+async function makeSoilVariant(relIn, relOut, { keyLo = 14, keyHi = 60 } = {}) {
+    const src = rawExists(relIn);
+    if (!src) return;
+    console.log(`>> ${relIn} (soil black-key ${keyLo}/${keyHi})`);
+    let img = await removeBlack(src, keyLo, keyHi);
+    img = await trimToBuffer(img);
+    img = img.resize(128, 128, { fit: 'inside', background: { r: 0, g: 0, b: 0, alpha: 0 } });
+    img = await finalClean(img, null, { minAlpha: 8 });
+    fs.mkdirSync(TILES_OUT, { recursive: true });
+    const dst = path.join(TILES_OUT, relOut);
+    await img.png({ compressionLevel: 9 }).toFile(dst);
+    const m = await sharp(dst).metadata();
+    console.log(`OK  tiles/${relOut} -> ${m.width}x${m.height} ch=${m.channels} (${(fs.statSync(dst).size / 1024).toFixed(0)} KB)`);
+}
+await makeSoilVariant('soil_han_ngoc_raw.png', 'soil_han_ngoc.png');
+await makeSoilVariant('soil_xich_viem_raw.png', 'soil_xich_viem.png');
+await makeSoilVariant('soil_tuc_nhuong_raw.png', 'soil_tuc_nhuong.png');

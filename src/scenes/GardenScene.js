@@ -19,6 +19,11 @@ import { ALCHEMY_ASSETS } from '../data/AlchemyAssetManifest.js';
 import BeastModal from '../ui/BeastModal.js';
 import { BEAST_ASSETS } from '../data/BeastAssetManifest.js';
 import { BeastSystem } from '../systems/BeastSystem.js';
+import {
+    SOIL_TYPES, SOIL_TEXTURES, UPGRADEABLE_SOILS, DEFAULT_SOIL_ID,
+    resolveSoil, soilYieldMult, rollInstantMature,
+} from '../data/SoilTypes.js';
+import { createPlotData, hydratePlotData, plotBloomDelay, drainPlotWater } from '../data/PlotData.js';
 
 const W = 1080;
 const H = 1920;
@@ -174,6 +179,12 @@ export default class GardenScene extends Phaser.Scene {
         // Lò Luyện Đan art — Bát Quái Lô + Trúc Cơ / Cửu Chuyển pills
         const alchemyAssets = Object.values(ALCHEMY_ASSETS);
         for (const asset of alchemyAssets) this.load.image(asset.key, asset.path);
+        // Stage 1 — Linh Thổ premium soils (public/assets/tiles/). Loaded by
+        // the SoilTypes manifest; a 404 falls back to the base tile at swap
+        // time (see soilTextureKey()), so the grid never renders a missing key.
+        for (const tex of SOIL_TEXTURES) {
+            if (!this.textures.exists(tex.key)) this.load.image(tex.key, tex.path);
+        }
 
         // Log any 404 failures so missing assets are immediately visible
         // in the browser console instead of silently falling back to canvas.
@@ -325,6 +336,7 @@ export default class GardenScene extends Phaser.Scene {
 
     /** Tear every system down with the scene (bus listeners included). */
     shutdown() {
+        this.hideSoilModal();
         this.beastModal?.destroy();
         this.fishingModal?.destroy();
         this.alchemyModal?.destroy();
@@ -440,6 +452,7 @@ export default class GardenScene extends Phaser.Scene {
         // System 5: the furnace + buff timers run on the wall clock; the
         // modal listens to the ALCHEMY_* bus events for its countdown UI.
         this.alchemy?.tick(delta);
+        this.tickSoilWater(delta);
         this.weatherView?.update(delta);
         if (changes?.phaseChanged || changes?.conditionChanged) this.updateWeatherHud();
     }
@@ -555,6 +568,7 @@ export default class GardenScene extends Phaser.Scene {
         dry.forEach((tile, i) => {
             const data = tile.gridData;
             data.watered = true;
+            data.water = 1;
             data.rainWatered = true;
             tile.setTint(0xbfe6ff);
             this.bus.emit(EVENTS.TILE_WATERED, { row: data.row, col: data.col, source });
@@ -569,7 +583,7 @@ export default class GardenScene extends Phaser.Scene {
         this.time.delayedCall(1200, () => {
             dry.forEach((tile, k) => {
                 if (tile.active && tile.gridData.state === STATE.GROWING) {
-                    this.time.delayedCall(k * this.bloomStaggerMs(), () => this.bloomTile(tile));
+                    this.time.delayedCall(plotBloomDelay(tile.gridData, k * this.bloomStaggerMs()), () => this.bloomTile(tile));
                 }
             });
         });
@@ -956,18 +970,198 @@ export default class GardenScene extends Phaser.Scene {
             this.tiles[r] = [];
             for (let c = 0; c < COLS; c++) {
                 const pos = IsoMath.gridToScreen(c, r, ORIGIN.x, ORIGIN.y);
-                const tile = this.add.image(pos.x, pos.y, 'tile_soil')
+                const saved = this.savedPlots?.[r]?.[c];
+                const data = saved ? hydratePlotData(saved, r, c) : createPlotData(r, c);
+                const tile = this.add.image(pos.x, pos.y, this.soilTextureKey(data.soilType))
                     .setInteractive(
                         new Phaser.Geom.Polygon(IsoMath.hitAreaPoints),
                         Phaser.Geom.Polygon.Contains
                     )
                     .setDepth(D.TILES + (r + c) * 7)
                     .setScale(1.02);
-                tile.gridData = { row: r, col: c, state: STATE.EMPTY, seedId: null, watered: false, plantSprites: null };
+                tile.setOrigin(0.5, 32 / tile.height);
+                tile.gridData = data;
                 tile.on('pointerdown', () => this.handleTileClick(tile));
                 tile.on('pointerover', () => this.hoverTile(tile, true));
                 tile.on('pointerout', () => this.hoverTile(tile, false));
                 this.tiles[r][c] = tile;
+            }
+        }
+    }
+
+    /* ============================ SOIL (Stage 1 Linh Thổ) ============================ */
+    /**
+     * Texture key for a soil id, falling back to the base tile when the
+     * premium PNG failed to load (404 → never a missing-texture square).
+     */
+    soilTextureKey(soilType) {
+        const soil = resolveSoil(soilType);
+        return this.textures.exists(soil.textureKey) ? soil.textureKey : 'tile_soil';
+    }
+
+    /**
+     * Swap a tile's soil texture. Premium tiles carry a visible side thickness
+     * so they are taller than 64px; the origin is re-pinned so the diamond's
+     * top face still sits on the 128x64 iso footprint and the hit polygon.
+     */
+    applySoilTexture(tile, soilType) {
+        tile.setTexture(this.soilTextureKey(soilType));
+        tile.setOrigin(0.5, 32 / tile.height);
+        tile.setScale(1.02);
+    }
+
+    /** Plot upgrade — the click/modal entry point on an EMPTY plot. */
+    openSoilUpgrade(tile) {
+        const data = tile.gridData;
+        if (data.state !== STATE.EMPTY) return false;
+        const current = resolveSoil(data.soilType);
+        const options = UPGRADEABLE_SOILS.filter((s) => s.tier > current.tier);
+        if (!options.length) {
+            this.flashHint(`${current.name} đã là linh thổ tối thượng ✦`);
+            return false;
+        }
+        this.audio.ensure();
+        this.audio.click();
+        this.showSoilUpgradeModal(tile, options);
+        return true;
+    }
+
+    /**
+     * Deduct diamonds via the EconomySystem, record the new soil on the plot,
+     * and play the level-up tween + particle burst. Returns the economy result.
+     */
+    upgradeSoil(tile, soilId) {
+        const data = tile.gridData;
+        const target = SOIL_TYPES[soilId];
+        if (!target || data.state !== STATE.EMPTY) return { success: false, message: 'Ô đất phải trống để cải tạo' };
+        const current = resolveSoil(data.soilType);
+        if (target.tier <= current.tier) return { success: false, message: `${current.name} không thể đổi sang ${target.name}` };
+        const pay = this.economy.spendDiamonds(target.upgradeCost, `soil-upgrade:${soilId}`);
+        if (!pay.success) {
+            this.audio.click(0);
+            this.showNotice({
+                title: 'Thiếu Đá Linh Khí',
+                message: `${target.name} cần ${target.upgradeCost} 💎 — hiện có ${this.economy.spiritStones} 💎.`,
+                tone: 'warn',
+            });
+            return pay;
+        }
+        data.soilType = target.id;
+        data.watered = target.alwaysWatered;
+        data.water = target.alwaysWatered ? 1 : 0;
+        this.playSoilUpgradeFx(tile, target);
+        this.bus.emit(EVENTS.CURRENCY_CHANGED, { source: 'soil-upgrade', harmony: this.economy.harmony, spiritStones: this.economy.spiritStones });
+        this.bus.emit('garden:soil-upgraded', { row: data.row, col: data.col, soilType: target.id, cost: target.upgradeCost });
+        this.updateHud();
+        this.flashHint(`${target.name} ✦ ${target.description}`);
+        return pay;
+    }
+
+    /** Gentle level-up: dip + texture swap + spring back, ring flash, spark burst. */
+    playSoilUpgradeFx(tile, soil) {
+        this.audio.chime(783.99, { gain: 0.09 });
+        this.audio.chime(1174.66, { gain: 0.07, when: 0.12 });
+        const ring = this.add.image(tile.x, tile.y, 'glow')
+            .setTint(soil.glow).setAlpha(0.9).setScale(0.4, 0.25).setDepth(tile.depth + 4);
+        this.tweens.add({ targets: ring, scale: { from: 0.4, to: 2.2 }, scaleY: 1.2, alpha: 0, duration: 700, ease: 'Cubic.easeOut', onComplete: () => ring.destroy() });
+        this.tweens.add({
+            targets: tile, scaleX: 0.92, scaleY: 0.92, alpha: 0.55, duration: 160, ease: 'Sine.easeIn',
+            onComplete: () => {
+                if (!tile.active) return;
+                this.applySoilTexture(tile, soil.id);
+                tile.setScale(0.92).setAlpha(0.55);
+                this.tweens.add({ targets: tile, scaleX: 1.02, scaleY: 1.02, alpha: 1, duration: 420, ease: 'Back.easeOut' });
+            },
+        });
+        this.sparks?.emitParticleAt(tile.x, tile.y - 20, 18);
+        this.emitPetals?.(tile.x, tile.y - 20, 'flower_golden_amber', 8);
+    }
+
+    /** Soil pick card — one row per unlockable soil, priced in 💎. */
+    showSoilUpgradeModal(tile, options) {
+        this.hideSoilModal();
+        const card = this.add.container(W / 2, 900).setDepth(D.MODAL + 2).setAlpha(0).setScale(0.9);
+        const rowH = 118;
+        const h = 150 + options.length * rowH;
+        const g = this.add.graphics();
+        g.fillStyle(C.panel, 0.98).lineStyle(3, C.gold, 1);
+        g.fillRoundedRect(-380, -h / 2, 760, h, 22).strokeRoundedRect(-380, -h / 2, 760, h, 22);
+        const title = this.add.text(0, -h / 2 + 44, `Cải Tạo Linh Thổ · Ô (${tile.gridData.row + 1},${tile.gridData.col + 1})`, {
+            fontFamily: DIALOG_FONT, fontSize: '30px', color: '#ffe9a8', fontStyle: 'bold', stroke: '#3a1c5e', strokeThickness: 5,
+        }).setOrigin(0.5);
+        const items = [g, title];
+        options.forEach((soil, i) => {
+            const y = -h / 2 + 100 + i * rowH;
+            const afford = this.economy.canAfford(soil.upgradeCost);
+            const bg = this.add.graphics();
+            bg.fillStyle(afford ? 0x2e1b52 : 0x1d1430, 1).lineStyle(2, afford ? C.gold : C.goldDim, 1);
+            bg.fillRoundedRect(-350, y - 8, 700, rowH - 14, 16).strokeRoundedRect(-350, y - 8, 700, rowH - 14, 16);
+            const icon = this.add.image(-290, y + 44, this.soilTextureKey(soil.id)).setScale(0.75);
+            const name = this.add.text(-225, y + 12, `${soil.name} · ${soil.upgradeCost} 💎`, {
+                fontFamily: DIALOG_FONT, fontSize: '25px', color: afford ? '#ffe9a8' : '#a08a70', fontStyle: 'bold',
+            }).setOrigin(0, 0);
+            const desc = this.add.text(-225, y + 48, soil.description, {
+                fontFamily: DIALOG_FONT, fontSize: '18px', color: afford ? '#f8ead0' : '#8a7a68', wordWrap: { width: 560 }, lineSpacing: 2,
+            }).setOrigin(0, 0);
+            const zone = this.add.zone(0, y + 44, 700, rowH - 14).setInteractive({ useHandCursor: true });
+            zone.on('pointerdown', (p, lx, ly, e) => {
+                e?.stopPropagation?.();
+                const res = this.upgradeSoil(tile, soil.id);
+                this.hideSoilModal();
+                if (!res.success) return;
+            });
+            items.push(bg, icon, name, desc, zone);
+        });
+        const closeTxt = this.add.text(0, h / 2 - 40, 'Đóng', {
+            fontFamily: DIALOG_FONT, fontSize: '22px', color: '#fff7dd', fontStyle: 'bold',
+        }).setOrigin(0.5);
+        const closeZone = this.add.zone(0, h / 2 - 40, 200, 44).setInteractive({ useHandCursor: true });
+        closeZone.on('pointerdown', (p, lx, ly, e) => { e?.stopPropagation?.(); this.audio.click(0); this.hideSoilModal(); });
+        items.push(closeTxt, closeZone);
+        card.add(items);
+        this.soilModal = card;
+        this.soilModalOpen = true;
+        this.tweens.add({ targets: card, alpha: 1, scale: 1, duration: 240, ease: 'Back.easeOut' });
+        return card;
+    }
+
+    hideSoilModal() {
+        const card = this.soilModal;
+        this.soilModal = null;
+        this.soilModalOpen = false;
+        if (!card) return;
+        this.tweens.add({ targets: card, alpha: 0, scale: 0.9, duration: 160, onComplete: () => card.destroy() });
+    }
+
+    /** Serializable snapshot of every plot (soilType included) for save games. */
+    serializePlots() {
+        return this.tiles.map((row) => row.map((t) => ({
+            row: t.gridData.row, col: t.gridData.col, state: t.gridData.state, seedId: t.gridData.seedId,
+            soilType: t.gridData.soilType ?? DEFAULT_SOIL_ID, watered: !!t.gridData.watered, water: t.gridData.water ?? 0,
+        })));
+    }
+
+    /**
+     * Water drain tick — premium soils change how fast a growing plot dries:
+     * Xích Viêm ×2, Hàn Ngọc never (pinned at 1 and always flagged watered).
+     */
+    tickSoilWater(delta) {
+        if (!this.tiles?.length) return;
+        for (const tile of this.tiles.flat()) {
+            const data = tile.gridData;
+            if (!data) continue;
+            const soil = resolveSoil(data.soilType);
+            if (soil.alwaysWatered) {
+                if (!data.watered || data.water !== 1) { data.watered = true; data.water = 1; }
+                continue;
+            }
+            if (data.state !== STATE.GROWING && data.state !== STATE.PLANTED) continue;
+            const next = drainPlotWater(data, delta);
+            if (next === data.water) continue;
+            data.water = next;
+            if (next <= 0 && data.watered) {
+                data.watered = false;
+                if (data.state === STATE.GROWING) tile.clearTint();
             }
         }
     }
@@ -981,7 +1175,7 @@ export default class GardenScene extends Phaser.Scene {
 
     /** True when a full-screen overlay (drawer / dialog / codex / alchemy / fishing / beast / ad) is up. */
     uiBlocked() {
-        return !!(this.drawerOpen || this.dialogVisible || this.adWatching || this.codexModal?.isOpen() || this.fishingModal?.isOpen() || this.alchemyModal?.isOpen() || this.beastModal?.isOpen());
+        return !!(this.drawerOpen || this.dialogVisible || this.adWatching || this.soilModalOpen || this.codexModal?.isOpen() || this.fishingModal?.isOpen() || this.alchemyModal?.isOpen() || this.beastModal?.isOpen());
     }
 
     /** Open the presentation-only fishing pier UI. */
@@ -1109,7 +1303,9 @@ export default class GardenScene extends Phaser.Scene {
             this.audio.click();
             return;
         }
-        this.flashHint('Hãy mở Ngăn Hạt Giống và chọn một loài hoa ✦');
+        // Empty plot, no tool armed: offer the Linh Thổ upgrade (falls back to
+        // the seed hint when the plot is already at the top tier).
+        if (!this.openSoilUpgrade(tile)) this.flashHint('Hãy mở Ngăn Hạt Giống và chọn một loài hoa ✦');
     }
 
     /**
@@ -1188,10 +1384,12 @@ export default class GardenScene extends Phaser.Scene {
         const night = !!this.weather?.isNight();
         const codexBonus = this.codex?.getHarvestBonus(seedId, { night }) ?? {};
         const skyMod = this.weather?.getModifiers() ?? { harmonyMult: 1, reason: 'none' };
+        const soil = resolveSoil(data.soilType);
         const reward = this.economy.harvestFlower(seedId, {
             harmonyBonus: codexBonus.harmonyBonus ?? 0,
             stoneBonus: codexBonus.stoneBonus ?? 0,
             harmonyMult: (codexBonus.harmonyMult ?? 1) * (skyMod.harmonyMult ?? 1),
+            yieldMult: soilYieldMult(data.soilType, seedId),
         });
         const newQuests = this.economy.checkQuests();
 
@@ -1237,6 +1435,7 @@ export default class GardenScene extends Phaser.Scene {
         if (reward.harmonyMult > 1) {
             credits.push(skyMod.reason === 'full-moon' ? `Trăng Tròn ×${reward.harmonyMult}✿` : `×${reward.harmonyMult}✿`);
         }
+        if ((reward.yieldMult ?? 1) > 1) credits.push(`${soil.name} ×${reward.yieldMult.toFixed(reward.yieldMult % 1 ? 1 : 0)}💎`);
         const rewardText = `+${reward.harmony} ✿  +${reward.spiritStones} 💎${credits.length ? `\n${credits.join(' · ')}` : ''}`;
         const pop = this.add.text(tile.x, tile.y - 60, rewardText, {
             fontFamily: DIALOG_FONT, fontSize: credits.length ? '24px' : '28px', color: '#ffe9a8', fontStyle: 'bold',
@@ -1250,7 +1449,8 @@ export default class GardenScene extends Phaser.Scene {
         // Reset plot instantly
         data.state = STATE.EMPTY;
         data.seedId = null;
-        data.watered = false;
+        data.watered = soil.alwaysWatered;
+        data.water = soil.alwaysWatered ? 1 : 0;
         data.rainWatered = false;
         data.plantSprites = null;
         data.bloomSprite = null;
@@ -1332,13 +1532,31 @@ export default class GardenScene extends Phaser.Scene {
         this.tweens.add({
             targets: sprout, angle: { from: -4, to: 4 }, duration: 800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
         });
-        this.tweens.add({ targets: tile, scale: { from: 1.0, to: 1.04, yoyo: true }, duration: 120 });
+        this.tweens.add({ targets: tile, scale: { from: 1.02, to: 1.06, yoyo: true }, duration: 120 });
 
         this.updateHud();
         this.updateHint();
         const idx = this.tiles.flat().indexOf(tile);
         this.audio.chime(660 + (idx % 5) * 60, { gain: 0.05 });
-        this.bus.emit(EVENTS.TILE_PLANTED, { seedId: seed.id, row: data.row, col: data.col });
+        this.bus.emit(EVENTS.TILE_PLANTED, { seedId: seed.id, row: data.row, col: data.col, soilType: data.soilType });
+
+        // Soil perks at planting time: Hàn Ngọc plots are born watered (and
+        // start growing at once); Tức Nhưỡng rolls a 10% instant-mature chance.
+        const soil = resolveSoil(data.soilType);
+        if (rollInstantMature(data.soilType)) {
+            data.watered = true;
+            data.water = 1;
+            data.state = STATE.GROWING;
+            this.flashHint(`${soil.name} ✦ ${seed.name} lập tức trưởng thành!`);
+            this.time.delayedCall(320, () => { if (tile.active) this.bloomTile(tile); });
+        } else if (soil.alwaysWatered) {
+            data.watered = true;
+            data.water = 1;
+            data.state = STATE.GROWING;
+            tile.setTint(0xaee8ff);
+            this.bus.emit(EVENTS.TILE_WATERED, { row: data.row, col: data.col, source: 'soil:han-ngoc' });
+            this.time.delayedCall(plotBloomDelay(data, 1200), () => { if (tile.active) this.bloomTile(tile); });
+        }
     }
 
     /* ============================ SEARCH DRAWER ============================ */
@@ -2165,6 +2383,7 @@ export default class GardenScene extends Phaser.Scene {
             const data = tile.gridData;
             if (data.state === STATE.BLOOMING) return;
             data.watered = true;
+            data.water = 1;
             data.rainWatered = false;
             tile.setTint(0xaee8ff);
             this.waterDropOnTile(tile, i);
@@ -2180,7 +2399,8 @@ export default class GardenScene extends Phaser.Scene {
             plantable.forEach((tile) => {
                 const data = tile.gridData;
                 if (data.state === STATE.GROWING) {
-                    this.time.delayedCall(k * stagger, () => this.bloomTile(tile));
+                    // Xích Viêm (+40% growth) blooms earlier in the cascade.
+                    this.time.delayedCall(plotBloomDelay(data, k * stagger), () => this.bloomTile(tile));
                     k++;
                 }
             });
@@ -2213,6 +2433,7 @@ export default class GardenScene extends Phaser.Scene {
         const seed = SEED_BY_ID[data.seedId];
         data.state = STATE.BLOOMING;
         tile.clearTint();
+        if (resolveSoil(data.soilType).alwaysWatered) { data.watered = true; data.water = 1; }
         this.bloomCount++;
 
         // Record bloom in economy

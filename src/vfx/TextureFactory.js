@@ -792,6 +792,24 @@ export function ensureFallbackTextures(scene) {
                 }
             }),
     };
+    // Stage 1 premium soils — themed diamond fallbacks if a tile PNG 404s.
+    const soilFallback = (key, top, bottom, rim) => () =>
+        canvasTex(scene, key, 128, 64, (ctx, w, h) => {
+            const cx = w / 2, cy = h / 2;
+            const g = ctx.createLinearGradient(cx, cy - 32, cx, cy + 32);
+            g.addColorStop(0, top);
+            g.addColorStop(1, bottom);
+            diamondPath(ctx, cx, cy, 62, 30);
+            ctx.fillStyle = g;
+            ctx.fill();
+            ctx.strokeStyle = rim;
+            ctx.lineWidth = 3;
+            diamondPath(ctx, cx, cy, 60, 29);
+            ctx.stroke();
+        });
+    needed.soil_han_ngoc = soilFallback('soil_han_ngoc', '#bff7ff', '#3aa7b8', '#e6ffff');
+    needed.soil_xich_viem = soilFallback('soil_xich_viem', '#4a1e14', '#1e0c08', '#ff6a3a');
+    needed.soil_tuc_nhuong = soilFallback('soil_tuc_nhuong', '#f5e6c0', '#b8934f', '#ffe3a0');
     // draw procedurally only for keys that failed to load
     for (const key of Object.keys(needed)) {
         if (!scene.textures.exists(key)) {

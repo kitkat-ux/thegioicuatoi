@@ -72,6 +72,9 @@ class TestGardenScene extends GardenScene {
         };
         make('bg_manor_isometric', 1080, 1920, '#1b1140');
         make('tile_soil', 128, 64, '#5a3a1c');
+        make('soil_han_ngoc', 128, 72, '#7ff7ff');
+        make('soil_xich_viem', 128, 90, '#7a2a12');
+        make('soil_tuc_nhuong', 128, 72, '#e8d4a0');
         make('flower_purple', 256, 256, '#B26BFF');
         make('flower_golden', 256, 256, '#FFD700');
         make('flower_cyan', 256, 256, '#00E5FF');

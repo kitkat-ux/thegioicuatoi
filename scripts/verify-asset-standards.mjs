@@ -21,6 +21,7 @@ const OUT = 'public/assets/images';
 const sceneSrc = fs.readFileSync('src/scenes/GardenScene.js', 'utf8');
 const preload = [...(sceneSrc.match(/const assets = \[([\s\S]*?)\]/)?.[1] ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1]);
 const { FISHING_ASSET_MANIFEST } = await import(pathToFileURL(path.resolve('src/data/FishingAssetManifest.js')).href);
+const { SOIL_TEXTURES } = await import(pathToFileURL(path.resolve('src/data/SoilTypes.js')).href);
 
 // Sprites keyed off a flat studio background (never full-bleed).
 const KEYED_MAX_EDGE = { icon: 192, sprite: 768 };
@@ -145,8 +146,43 @@ for (const f of fishingFiles) {
         `alpha: ${(transparent * 100 / total).toFixed(0)}% transparent`);
 }
 
+/* ------------------------- Stage 1 soil tiles -------------------------
+   Premium Linh Thổ tiles (public/assets/tiles/) are black-keyed isometric
+   diamonds: 128px wide (iso footprint), ≤ 128px tall (side thickness + aura),
+   4-channel true alpha, transparent corners, and 1:1 with the SoilTypes
+   manifest (no orphan, nothing missing). */
+const tilesDir = 'public/assets/tiles';
+const tileFiles = fs.existsSync(tilesDir) ? fs.readdirSync(tilesDir).filter((f) => f.endsWith('.png')).sort() : [];
+const tileExpected = SOIL_TEXTURES.map((t) => t.path.split('/').pop()).sort();
+check('soil manifest files exist on disk', tileExpected.every((f) => tileFiles.includes(f)), `${tileExpected.length} manifest files / ${tileFiles.length} PNGs`);
+check('no orphan assets in public/assets/tiles', tileFiles.every((f) => tileExpected.includes(f)), tileFiles.filter((f) => !tileExpected.includes(f)).join(', ') || 'none');
+for (const f of tileFiles) {
+    const p = path.join(tilesDir, f);
+    const { data, info } = await sharp(p).raw().toBuffer({ resolveWithObject: true });
+    const meta = await sharp(p).metadata();
+    const total = info.width * info.height;
+    let transparent = 0;
+    let semi = 0;
+    let residue = 0;
+    for (let i = 0; i < total; i++) {
+        const o = i * info.channels;
+        const alpha = info.channels === 4 ? data[o + 3] : 255;
+        if (alpha === 0) transparent++;
+        else if (alpha < 255) semi++;
+        else if (Math.max(data[o], data[o + 1], data[o + 2]) < 12) residue++;
+    }
+    const cornersTransparent = info.channels === 4 && [[2, 2], [info.width - 3, 2], [2, info.height - 3], [info.width - 3, info.height - 3]]
+        .every(([x, y]) => data[(y * info.width + x) * info.channels + 3] === 0);
+    const ok = meta.format === 'png' && meta.depth === 'uchar' && info.channels === 4 &&
+        transparent + semi > total * 0.02 && cornersTransparent &&
+        info.width === 128 && info.height <= 128 && residue < total * 0.005;
+    check(`soil tile: ${f}`, ok,
+        `${info.width}x${info.height} ch=${info.channels} depth=${meta.depth} ` +
+        `alpha: ${(transparent * 100 / total).toFixed(0)}% transparent · black residue ${residue}px`);
+}
+
 console.log(fails === 0
-    ? `\nASSET STANDARDS OK — ${files.length} garden files + ${fishingFiles.length} fishing files are clean 32-bit RGBA with true alpha, no faux checkerboard, no key residue` +
+    ? `\nASSET STANDARDS OK — ${files.length} garden files + ${fishingFiles.length} fishing files + ${tileFiles.length} soil tiles are clean 32-bit RGBA with true alpha, no faux checkerboard, no key residue` +
       (warnings ? ` (${warnings} warning(s))` : '')
     : `\n${fails} ASSET(S) VIOLATE 07_VISUAL_ASSET_CATALOG.md`);
 process.exit(fails ? 1 : 0);

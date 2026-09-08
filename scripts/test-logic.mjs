@@ -651,5 +651,67 @@ check('quest rows: completion by value (green_thumb at 10 blooms)', (() => {
     check('modalInput: stopPropagation is what the shield calls', /stopPropagation\(\)/.test(modalInput));
 }
 
+// --- Stage 1: Soil types (Linh Thổ) ---
+{
+    const {
+        SOIL_TYPES, SOIL_ORDER, SOIL_TEXTURES, resolveSoil, soilGrowthMs, soilWaterDrain, soilIsWatered,
+        soilYieldMult, applySoilYield, rollInstantMature, soilUpgradeCost, normalizePlotData,
+    } = await import('../src/data/SoilTypes.js');
+    const { createPlotData, hydratePlotData, serializePlotData, plotGrowthMs, plotBloomDelay, drainPlotWater, plotDryOutMs, BASE_WATER_DRAIN_PER_MS } = await import('../src/data/PlotData.js');
+
+    check('SoilTypes: 4 soils in canonical order', JSON.stringify(SOIL_ORDER) === JSON.stringify(['HOANG_THO', 'HAN_NGOC_THO', 'XICH_VIEM_THO', 'TUC_NHUONG']));
+    check('SoilTypes: upgrade costs 20 / 30 / 50 💎', SOIL_TYPES.HAN_NGOC_THO.upgradeCost === 20 && SOIL_TYPES.XICH_VIEM_THO.upgradeCost === 30 && SOIL_TYPES.TUC_NHUONG.upgradeCost === 50);
+    check('SoilTypes: textures point at public/assets/tiles', SOIL_TEXTURES.length === 3 && SOIL_TEXTURES.every((t) => t.path.startsWith('./assets/tiles/') && fs.existsSync(path.join('public', t.path.replace('./', '')))));
+    check('SoilTypes: legacy/unknown soil falls back to HOANG_THO', resolveSoil(undefined).id === 'HOANG_THO' && resolveSoil('BOGUS').id === 'HOANG_THO');
+    check('SoilTypes: normalizePlotData backfills soilType', normalizePlotData({ state: 'EMPTY' }).soilType === 'HOANG_THO');
+    check('Hàn Ngọc: always watered, zero drain', soilIsWatered(false, 'HAN_NGOC_THO') && soilWaterDrain(1, 'HAN_NGOC_THO') === 0 && !soilIsWatered(false, 'HOANG_THO'));
+    check('Hàn Ngọc: +10% cold herb yield only', Math.abs(soilYieldMult('HAN_NGOC_THO', 'flower_cyan_orchid') - 1.1) < 1e-9 && soilYieldMult('HAN_NGOC_THO', 'flower_golden_amber') === 1);
+    check('Xích Viêm: +40% growth speed (timer ×1/1.4)', soilGrowthMs(14000, 'XICH_VIEM_THO') === 10000);
+    check('Xích Viêm: doubles water drain', soilWaterDrain(3, 'XICH_VIEM_THO') === 6);
+    check('Tức Nhưỡng: 2x harvest drop', applySoilYield(3, 'TUC_NHUONG', 'flower_purple_wisteria') === 6 && applySoilYield(1, 'HOANG_THO', 'flower_purple_wisteria') === 1);
+    check('Tức Nhưỡng: 10% instant mature (deterministic rng)', rollInstantMature('TUC_NHUONG', () => 0.05) && !rollInstantMature('TUC_NHUONG', () => 0.5) && !rollInstantMature('HOANG_THO', () => 0));
+    check('soilUpgradeCost: valid targets priced, same/base rejected', soilUpgradeCost('HOANG_THO', 'TUC_NHUONG') === 50 && soilUpgradeCost('HOANG_THO', 'HOANG_THO') === null && soilUpgradeCost('HOANG_THO', 'NOPE') === null);
+
+    // PlotData
+    const fresh = createPlotData(2, 3);
+    check('PlotData: fresh plot defaults to HOANG_THO / EMPTY / dry', fresh.soilType === 'HOANG_THO' && fresh.state === 'EMPTY' && fresh.watered === false && fresh.water === 0);
+    const legacy = hydratePlotData({ row: 1, col: 1, state: 'PLANTED', seedId: 'flower_cyan_orchid', watered: true });
+    check('PlotData: legacy save (no soilType) hydrates to HOANG_THO and keeps its seed', legacy.soilType === 'HOANG_THO' && legacy.seedId === 'flower_cyan_orchid' && legacy.state === 'PLANTED' && legacy.watered === true);
+    const jade = hydratePlotData({ row: 0, col: 0, state: 'EMPTY', soilType: 'HAN_NGOC_THO' });
+    check('PlotData: Hàn Ngọc save hydrates 100% watered', jade.watered === true && jade.water === 1);
+    check('PlotData: serialize round-trips soilType', serializePlotData(jade).soilType === 'HAN_NGOC_THO' && !('plantSprites' in serializePlotData(jade)));
+    const fire = { ...createPlotData(0, 0, 'XICH_VIEM_THO'), seedId: 'flower_cyan_orchid', state: 'GROWING', watered: true, water: 1 };
+    check('PlotData: growth timer applies soil multiplier (15000 → 10714)', plotGrowthMs(fire) === Math.round(15000 / 1.4) && plotGrowthMs({ ...fire, soilType: 'HOANG_THO' }) === 15000);
+    check('PlotData: bloom cascade delay scaled per soil', plotBloomDelay(fire, 1400) === 1000 && plotBloomDelay({ ...fire, soilType: 'HOANG_THO' }, 1400) === 1400);
+    const dt = 10000;
+    const baseLoss = BASE_WATER_DRAIN_PER_MS * dt;
+    check('PlotData: Xích Viêm drains twice as fast as Hoàng Thổ', Math.abs((1 - drainPlotWater(fire, dt)) - 2 * baseLoss) < 1e-9 && Math.abs((1 - drainPlotWater({ ...fire, soilType: 'HOANG_THO' }, dt)) - baseLoss) < 1e-9);
+    check('PlotData: Hàn Ngọc never drains', drainPlotWater({ ...fire, soilType: 'HAN_NGOC_THO' }, 10 * 60 * 1000) === 1 && plotDryOutMs('HAN_NGOC_THO') === Infinity);
+    check('PlotData: empty plot does not drain', drainPlotWater({ ...fire, state: 'EMPTY', water: 0.5 }, dt) === 0.5);
+    check('PlotData: dry-out time halves on Xích Viêm', plotDryOutMs('XICH_VIEM_THO') * 2 === plotDryOutMs('HOANG_THO'));
+
+    // Economy: yieldMult flows into harvest stones; spendDiamonds is the upgrade gate
+    const e2 = new EconomySystem();
+    e2.init();
+    const r2 = e2.harvestFlower('flower_purple_wisteria', { yieldMult: 2 });
+    check('Economy: yieldMult 2 doubles harvest stones', r2.spiritStones === 2 * ECONOMY_DEFAULTS.harvestYield.uncommon && r2.yieldMult === 2);
+    const rHi = e2.harvestFlower('flower_cyan_orchid', { yieldMult: 1.1, rng: () => 0.05 });
+    const rLo = e2.harvestFlower('flower_cyan_orchid', { yieldMult: 1.1, rng: () => 0.5 });
+    check('Economy: +10% yield on a 1-stone bloom pays a 2nd stone 10% of the time', rHi.spiritStones === 2 && rLo.spiritStones === 1);
+    e2.addDiamonds(30, 'test-grant');
+    const before = e2.spiritStones;
+    const ok20 = e2.spendDiamonds(SOIL_TYPES.HAN_NGOC_THO.upgradeCost, 'soil-upgrade:HAN_NGOC_THO');
+    check('Economy: soil upgrade deducts exactly 20 💎', ok20.success === true && e2.spiritStones === before - 20);
+    const poor = new EconomySystem(); poor.init();
+    check('Economy: cannot afford Tức Nhưỡng at 10 💎', poor.spendDiamonds(SOIL_TYPES.TUC_NHUONG.upgradeCost, 'soil-upgrade').success === false && poor.spiritStones === 10);
+
+    // Scene wiring (static)
+    const sceneSoil = fs.readFileSync(path.resolve('src/scenes/GardenScene.js'), 'utf8');
+    check('Scene: preloads SOIL_TEXTURES, upgrades via economy.spendDiamonds, swaps texture with tween + particles',
+        /SOIL_TEXTURES/.test(sceneSoil) && /spendDiamonds\(target\.upgradeCost/.test(sceneSoil)
+        && /applySoilTexture/.test(sceneSoil) && /emitParticleAt\(tile\.x, tile\.y - 20, 18\)/.test(sceneSoil)
+        && /tickSoilWater\(delta\)/.test(sceneSoil) && /yieldMult: soilYieldMult/.test(sceneSoil) && /hydratePlotData/.test(sceneSoil));
+}
+
 console.log(fails === 0 ? '\nALL TESTS PASSED' : `\n${fails} TEST(S) FAILED`);
 process.exit(fails === 0 ? 0 : 1);

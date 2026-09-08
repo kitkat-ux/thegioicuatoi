@@ -260,8 +260,17 @@ export class EconomySystem {
             ? modifiers.harmonyMult
             : 1;
 
+        // Soil yield multiplier (Stage 1 Linh Thổ): Tức Nhưỡng ×2, Hàn Ngọc
+        // +10% on cold herbs. Fractional stones are resolved by a weighted coin
+        // flip (injectable `rng`) so a +10% bonus on a 1-stone bloom still pays
+        // out one time in ten instead of being rounded away forever.
+        const yieldMult = Number.isFinite(modifiers.yieldMult) && modifiers.yieldMult > 0
+            ? modifiers.yieldMult
+            : 1;
+        const rng = typeof modifiers.rng === 'function' ? modifiers.rng : Math.random;
         const harmony = Math.round((baseHarmony + harmonyBonus) * harmonyMult);
-        const stones = baseStones + stoneBonus;
+        const rawStones = (baseStones + stoneBonus) * yieldMult;
+        const stones = Math.floor(rawStones) + (rng() < rawStones - Math.floor(rawStones) ? 1 : 0);
 
         this.spiritStones += stones;
         this.harmony += harmony;
@@ -274,7 +283,7 @@ export class EconomySystem {
         }
         this._emitDiamonds(stones, 'harvest');
 
-        return { harmony, spiritStones: stones, harmonyBonus, stoneBonus, harmonyMult };
+        return { harmony, spiritStones: stones, harmonyBonus, stoneBonus, harmonyMult, yieldMult };
     }
 
     /** Record a bloom event (called when a flower reaches blooming state) */

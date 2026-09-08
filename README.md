@@ -75,9 +75,12 @@ scripts/
 - **Linh Đảo Phù Vân** — the grid rides a floating celestial stone island:
   jade top surface, jagged 2.5D rock underside with glowing runes and hanging
   vines, plus a soft elliptical shadow (~0.45 alpha) on the water beneath.
-- **Tiên Nữ Hoa Giang** — the flying fairy NPC hovers over the bottom-right
-  lower bridge deck (890, 1345), facing the grid, with a sinusoidal idle
-  float (yoyo −4..+4 px) and a quest-aware dialog (khung thoại) structured as
+- **Tiên Nữ Hoa Giang** — the flying fairy NPC hovers at 78% × 64% of the
+  camera (842, 1229 on the 1080×1920 stage, right edge of the garden grid),
+  origin (0.5, 0.5) at depth 1200 — above the plot grid and the night wash —
+  with a sinusoidal idle
+  float (yoyo −4..+4 px), her name label centred right under the sprite, and
+  a quest-aware dialog (khung thoại) structured as
   Header (portrait + title) / Body (180px scrollable quest list) / Footer
   (response buttons pinned to the bottom). All dialog text uses the Unicode
   font stack `system-ui, -apple-system, sans-serif` for seamless Vietnamese

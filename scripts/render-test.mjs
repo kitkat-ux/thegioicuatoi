@@ -387,7 +387,7 @@ rcheck('island shadow darkens the water beneath (~0.45 alpha)', withShadow < noS
         }
         return { movedPct: (moved * 100) / total, mean: sum / total };
     };
-    const world = diff(240, 840, 980, 1420);   // island + lake: below the wash
+    const world = diff(240, 580, 980, 1420);   // island + lake: below the wash (left of the NPC)
     // The button CORES are opaque art parented above the wash, so those exact
     // pixels must not move at all (the bar backdrop is translucent by design
     // and legitimately shows the dimmed garden through it).
@@ -420,10 +420,12 @@ rcheck('island shadow darkens the water beneath (~0.45 alpha)', withShadow < noS
         for (let y = y0; y <= y1; y += 3) for (let x = x0; x <= x1; x += 3) { s += at(on, x, y); n++; }
         return s / n;
     };
-    const npcNight = onMean(830, 950, 1250, 1360);
-    const gardenNight = onMean(240, 840, 980, 1420);
+    // NPC re-anchored (hotfix) to (842.4, 1228.8): the fairy rect spans
+    // x 601..1083, y 959..1343 at depth 1200 — above the night wash.
+    const npcNight = onMean(770, 915, 1010, 1300);
+    const gardenNight = onMean(240, 580, 980, 1420);
     let npcDay = 0, dn = 0;
-    for (let y = 1250; y <= 1360; y += 3) for (let x = 830; x <= 950; x += 3) { npcDay += dayAt(x, y); dn++; }
+    for (let y = 1010; y <= 1300; y += 3) for (let x = 770; x <= 915; x += 3) { npcDay += dayAt(x, y); dn++; }
     npcDay /= dn;
     rcheck('NPC + Celestial Aura stay radiant at midnight (excluded from the night wash)',
         npcNight > gardenNight + 6 && npcNight >= npcDay - 2,
@@ -484,9 +486,9 @@ rcheck('island shadow darkens the water beneath (~0.45 alpha)', withShadow < noS
 }
 
 // 2) fairy sprite present at the lower bridge deck (bright pixels vs empty deck)
-const fairyLum = avgLum(890, 1290, 70);
+const fairyLum = avgLum(842, 1151, 70);          // sprite centre: anchor (842.4, 1228.8) + dy -78
 const emptyDeckLum = avgLum(890, 1560, 40);
-rcheck('fairy sprite rendered at (890,1345) area', fairyLum > emptyDeckLum + 8, `fairy-region=${fairyLum.toFixed(1)}`);
+rcheck('fairy sprite rendered at (842,1229) anchor area', fairyLum > emptyDeckLum + 8, `fairy-region=${fairyLum.toFixed(1)}`);
 
 // 3) island rock underside visible below the grid (rock pixels between grid bottom and shadow)
 const rockLum = avgLum(540, 1385, 40);
@@ -536,8 +538,8 @@ rcheck('no text overflows below the pinned footer', bleed < 40, `${bleed} bright
 // NapiImage source silently no-ops), so real-asset sprites are verified by
 // compositing them with sharp at the exact in-game display rect — the same
 // pixels the browser will show at that spot.
-const FW = 344, FH = 274;                    // NPC setDisplaySize(344, 274)
-const CXn = 890, CYn = 1345 - 44;            // sprite center inside npcGroup
+const FW = 344, FH = 274;                    // NPC display 344x274 (pre-1.4x base)
+const CXn = 842, CYn = 1229 - 78;            // sprite centre: anchor (842.4, 1228.8) + dy -78
 const LEFTn = Math.round(CXn - FW / 2), TOPn = Math.round(CYn - FH / 2);
 
 const fairyBuf = await sharpMod('public/assets/images/npc_tien_nu.png')

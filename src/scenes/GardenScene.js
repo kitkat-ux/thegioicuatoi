@@ -68,7 +68,8 @@ const C = {
    bg -100, platform -60, tiles ~910..1078, petals 1080+, weather FX 1088+,
    ★ AMBIENT wash 1100 (world below / UI above), hint 1125, chip 1128,
    HUD 1130, action bar 1140, drawer 1200, dialog 1400, modal 1500,
-   codex 1550, toast 1600, npc 200. */
+   codex 1550, toast 1600, npc 1200 (re-anchored guardian, above the wash),
+   HUD chrome (currencies, side buttons, action bar) 2500. */
 const D = LAYERS;
 
 /* pentatonic walk for bloom chimes (C major pentatonic, 2 octaves) */
@@ -85,10 +86,27 @@ const BTN_VISUAL_RADIUS = 86;
 const BTN_INNER_RADIUS = 77;
 const BTN_Y = 1780;
 
-/* NPC Tiên Nữ Hoa Giang — bottom-right lower bridge deck, facing left
-   toward the grid. */
+/* NPC Tiên Nữ Hoa Giang — re-anchored (hotfix) to 78% × 64% of the camera,
+   computed live in createBridgeAndNpc() BEFORE any external effect (aura,
+   float tween, sparkles, night mirror) is derived from it. NPC_POS stays as
+   the documented legacy anchor and the static fallback for camera-less
+   contexts (headless tests). */
 const NPC_POS = { x: 890, y: 1345 };
 const NPC_FLOAT_AMP = 4; // sinusoidal idle float: yoyo -4px..+4px
+/* Local sprite offset inside the NPC group: the sprite's CENTRE (origin
+   0.5/0.5) rides this far above the group anchor, so the sprite spans
+   y ∈ [-270, 114] and the name label at y = 132 lands cleanly centered
+   right under the sprite's bottom edge. */
+const NPC_SPRITE_DY = -78;
+/* Re-anchored guardian depth: above the plot grid (910..1078), the petals
+   and the ambient wash (1100) so she stays readable day and night, level
+   with the seed drawer (1200). */
+const NPC_DEPTH = 1200;
+/* HUD chrome depth (hotfix): every always-visible HUD container — the top
+   currency badges, the side buttons (Bí Cảnh, Linh Thú, Câu Cá, Hoa Các)
+   and the bottom action bar — sits at 2500, safely above every world layer
+   and modal overlay, and below only the realm-switch fade (9999). */
+const HUD_DEPTH = 2500;
 
 /* Khung Thoại (dialog) layout — three distinct vertical sections.
    Panel spans (60,400)-(1020,1080):
@@ -178,6 +196,11 @@ export default class GardenScene extends Phaser.Scene {
             'npc_tien_nu',
             'npc_tien_nu_portrait',
             'icon_codex_scroll',
+            // Optional premium halo art for the guardian aura. If this file
+            // ever 404s, the halo factory strictly checks texture existence
+            // and degrades to the procedural glow — a missing halo must
+            // never break the scene (see createHaloSprite).
+            'sacred_halo',
         ];
         for (const a of assets) {
             this.load.image(a, `./assets/images/${a}.png`);
@@ -305,40 +328,62 @@ export default class GardenScene extends Phaser.Scene {
         this.createBridgeAndNpc();
         // Bí Cảnh: load per-realm saved plots from LocalStorage before building the grid
         this.savedPlots = loadRealmPlots(this.activeRealmId);
-        this.createGrid();
+        this.createPlots();
         this.createHud();
         this.createActionBar();
         this.createDrawer();
         this.createModal();
-        this.createDialogBox();
+
+        /* ---------------- hotfix safe-guards ----------------
+           Everything above is load-bearing (island, NPC anchor, plots, HUD,
+           action bar, drawer, watering modal) and stays unguarded. Every
+           DECORATIVE or QUEST/DIALOG step below is wrapped in its own
+           try/catch so one broken sprite, texture or handler can NEVER stop
+           the scene rendering — the garden must always come up. */
+        // Quest dialog UI (the garden farms fine without it)
+        try { this.createDialogBox(); } catch (e) { console.warn(e); }
 
         // weather renderer (ambient wash + rain + moon) and the codex scroll
-        this.weatherView = new WeatherView(this, this.weather, this.bus).create();
-        this.createWeatherChip();
-        this.codexModal = new CodexModal(this, { codex: this.codex, bus: this.bus, audio: this.audio }).create();
-        this.fishingModal = new FishingModal(this, { audio: this.audio, bus: this.bus }).create();
-        this.createFishingEntryPoint();
-        this.alchemyModal = new AlchemyModal(this, { alchemy: this.alchemy, bus: this.bus, audio: this.audio }).create();
-        this.beastModal = new BeastModal(this, {
-            beasts: this.beasts.getBeasts(),
-            beastSystem: this.beasts,
-            bus: this.bus,
-            audio: this.audio,
-        }).create();
-        this.createBeastEntryPoint();
+        try {
+            this.weatherView = new WeatherView(this, this.weather, this.bus).create();
+        } catch (e) { console.warn(e); }
+        try { this.createWeatherChip(); } catch (e) { console.warn(e); }
+        try {
+            this.codexModal = new CodexModal(this, { codex: this.codex, bus: this.bus, audio: this.audio }).create();
+        } catch (e) { console.warn(e); }
+        try {
+            this.fishingModal = new FishingModal(this, { audio: this.audio, bus: this.bus }).create();
+        } catch (e) { console.warn(e); }
+        try { this.createFishingEntryPoint(); } catch (e) { console.warn(e); }
+        try {
+            this.alchemyModal = new AlchemyModal(this, { alchemy: this.alchemy, bus: this.bus, audio: this.audio }).create();
+        } catch (e) { console.warn(e); }
+        try {
+            this.beastModal = new BeastModal(this, {
+                beasts: this.beasts.getBeasts(),
+                beastSystem: this.beasts,
+                bus: this.bus,
+                audio: this.audio,
+            }).create();
+        } catch (e) { console.warn(e); }
+        try { this.createBeastEntryPoint(); } catch (e) { console.warn(e); }
 
         // Bí Cảnh (Secret Realms) — portal HUD button + realm selector modal
-        this.realmModal = new RealmModal(this, {
-            bus: this.bus,
-            audio: this.audio,
-            activeRealmId: this.activeRealmId,
-            onSelectRealm: (realmId) => this.switchRealm(realmId),
-        }).create();
-        this.createRealmEntryPoint();
+        try {
+            this.realmModal = new RealmModal(this, {
+                bus: this.bus,
+                audio: this.audio,
+                activeRealmId: this.activeRealmId,
+                onSelectRealm: (realmId) => this.switchRealm(realmId),
+            }).create();
+        } catch (e) { console.warn(e); }
+        try { this.createRealmEntryPoint(); } catch (e) { console.warn(e); }
 
-        this.createMist();
-        this.createParticleEmitters();
-        this.createBloomRadiance();
+        // Ambient decoration — pure chrome, never allowed to break the boot
+        try { this.createMist(); } catch (e) { console.warn(e); }
+        try { this.createParticleEmitters(); } catch (e) { console.warn(e); }
+        try { this.createBloomRadiance(); } catch (e) { console.warn(e); }
+
         this.setupGestures();
         this.subscribeToBus();
 
@@ -346,7 +391,7 @@ export default class GardenScene extends Phaser.Scene {
         this.updateHud();
         this.updateWeatherHud();
         this.applyCodexBuffs();
-        this.setupDialogInput();
+        try { this.setupDialogInput(); } catch (e) { console.warn(e); }
     }
 
     /* ==================== SYSTEM WIRING (EventManager) ====================
@@ -499,7 +544,7 @@ export default class GardenScene extends Phaser.Scene {
         this.lampLevel = v;
         if (Math.abs(v - prev) < 0.01) return;
         // island aura + runes brighten after dusk
-        this.islandAura?.setAlpha(0.12 + v * 0.26).setTint(v > 0.5 ? 0x9fd8ff : 0x8f7ae0);
+        this.islandAura?.setAlpha?.(0.12 + v * 0.26)?.setTint?.(v > 0.5 ? 0x9fd8ff : 0x8f7ae0);
         // the fairy + her Hào Quang stay radiantly lit after dark (never dimmed)
         this.syncNpcNightRadiance(v);
         // blooms radiate more at night
@@ -558,7 +603,7 @@ export default class GardenScene extends Phaser.Scene {
 
     /** Small HUD entry point for the presentation-only fishing modal. */
     createFishingEntryPoint() {
-        const button = this.add.container(700, 302).setDepth(3000);
+        const button = this.add.container(700, 302).setDepth(HUD_DEPTH);
         const bg = this.add.graphics();
         bg.fillStyle(0x1a0f2e, 0.9).lineStyle(2, C.tealGlow ?? C.cyan, 0.8);
         bg.fillRoundedRect(-112, -34, 224, 68, 16).strokeRoundedRect(-112, -34, 224, 68, 16);
@@ -676,6 +721,50 @@ export default class GardenScene extends Phaser.Scene {
         return Math.max(40, Math.round(90 * codexMult * alchemyMult));
     }
 
+    /* ===================== HALO FACTORY (hotfix safe-guard) =====================
+       Every halo/aura sprite is created through here. The premium
+       'sacred_halo' texture (ornate golden ring art) is OPTIONAL: the rule is
+       a STRICT textures.exists('sacred_halo') check before it is ever used,
+       degrading gracefully when it is missing:
+         1. 'sacred_halo'   → premium halo art (256px, never tinted — the
+                              art's own gold reads best unmodified)
+         2. 'glow'          → the tintable procedural radial glow (always
+                              built by buildExtraTextures in create())
+         3. graphics circle → a simple Phaser circle (renderer-safe radiance)
+         4. invisible container → the never-throws last resort
+       A missing texture can therefore never raise past this method and never
+       stops the scene from rendering. Pass `sacred: false` for soft light
+       pools that should stay tintable even when the premium art exists. */
+    createHaloSprite(x, y, {
+        tint, alpha = 1, scaleX = 1, scaleY = 1,
+        blendMode = Phaser.BlendModes.ADD, depth, sacred = true,
+    } = {}) {
+        let halo = null;
+        try {
+            if (sacred && this.textures.exists('sacred_halo')) {
+                halo = this.add.image(x, y, 'sacred_halo');
+            } else if (this.textures.exists('glow')) {
+                halo = this.add.image(x, y, 'glow');
+                if (tint !== undefined) halo.setTint(tint);
+            } else {
+                // simple Phaser graphics circle — still a visible radiance
+                const g = this.add.graphics();
+                g.fillStyle(tint ?? 0xffffff, 1);
+                g.fillCircle(0, 0, 128);
+                g.setPosition(x, y);
+                halo = g;
+            }
+            halo.setAlpha(alpha);
+            if (halo.setScale) halo.setScale(scaleX, scaleY);
+            if (blendMode !== undefined && halo.setBlendMode) halo.setBlendMode(blendMode);
+            if (depth !== undefined) halo.setDepth(depth);
+        } catch (e) {
+            console.warn(e);
+            halo = this.add.container(x, y); // invisible container — never throws
+        }
+        return halo;
+    }
+
 
     /* ============ LINH ĐẢO PHÙ VÂN — floating celestial stone island ============ */
     createPlatform() {
@@ -701,14 +790,21 @@ export default class GardenScene extends Phaser.Scene {
             .setDepth(D.PLATFORM)
             .setScale(0.82);
         // celestial aura around the island — the weather view lifts this at
-        // night ("đèn đá tự thắp sáng"), see onLampLevel()
-        this.islandAura = this.add.image(540, 1180, 'glow')
-            .setTint(0x8f7ae0).setAlpha(0.12).setScale(5.4, 3.0).setDepth(D.ISLAND_AURA);
+        // night ("đèn đá tự thắp sáng"), see onLampLevel(). Decorative:
+        // guarded so a halo failure can never take the platform down.
+        try {
+            this.islandAura = this.createHaloSprite(540, 1180, {
+                tint: 0x8f7ae0, alpha: 0.12, scaleX: 5.4, scaleY: 3.0,
+                blendMode: Phaser.BlendModes.NORMAL, depth: D.ISLAND_AURA, sacred: false,
+            });
+        } catch (e) { console.warn(e); }
         // island name, resting on the shadow like a reflection
-        this.add.text(540, 1452, '· Linh Đảo Phù Vân ·', {
-            fontFamily: DIALOG_FONT, fontSize: '24px', color: '#cfc0ff', fontStyle: 'italic',
-            stroke: '#160f2e', strokeThickness: 5,
-        }).setOrigin(0.5).setDepth(D.ISLAND_AURA + 1).setAlpha(0.9);
+        try {
+            this.add.text(540, 1452, '· Linh Đảo Phù Vân ·', {
+                fontFamily: DIALOG_FONT, fontSize: '24px', color: '#cfc0ff', fontStyle: 'italic',
+                stroke: '#160f2e', strokeThickness: 5,
+            }).setOrigin(0.5).setDepth(D.ISLAND_AURA + 1).setAlpha(0.9);
+        } catch (e) { console.warn(e); }
     }
 
     /* ====================== BRIDGE + NPC ====================== */
@@ -731,113 +827,142 @@ export default class GardenScene extends Phaser.Scene {
         // bridge/pavilion patches over it — any overlay at (150-350,700-900)
         // would produce a faux-checkerboard artifact.
 
-        // Realm guardian NPC — hovering above the bottom-right LOWER bridge
-        // deck (x: 890, y: 1345), body facing left toward the garden grid.
-        // The sprite + label follow the realm (Tiên Nữ Hoa Giang on the island,
-        // Băng Băng Tiên Tử in the Frost Realm — see RealmsData `npc`).
-        // NPC scaled up 1.4x for better touch visibility.
+        // Realm guardian NPC — hovering at 78% × 64% of the camera, body
+        // facing left toward the garden grid. The sprite + label follow the
+        // realm (Tiên Nữ Hoa Giang on the island, Băng Băng Tiên Tử in the
+        // Frost Realm — see RealmsData `npc`).
         const npc = this.getActiveNpcConfig();
         const npcTextureKey = this.textures.exists(npc.spriteKey) ? npc.spriteKey : 'npc_tien_nu';
 
-        this.npcGroup = this.add.container(NPC_POS.x, NPC_POS.y).setDepth(D.NPC);
-        const npcSprite = this.add.image(0, -44, npcTextureKey)
+        /* ---- HOTFIX re-anchor: resolve the final position from the camera
+           BEFORE any external effect (aura, float tween, sparkles, night
+           mirror) is computed, so every effect orbits the on-screen anchor.
+           1080×1920 stage → (842.4, 1228.8), right edge of the garden grid.
+           NPC_POS remains the static fallback for camera-less contexts. */
+        const cam = this.cameras?.main;
+        const anchorX = cam?.width > 0 ? cam.width * 0.78 : NPC_POS.x;
+        const anchorY = cam?.height > 0 ? cam.height * 0.64 : NPC_POS.y;
+        this.npcPos = { x: anchorX, y: anchorY };
+
+        // NPC group: origin-centred anchor, depth 1200 — above the plot grid
+        // (910..1078) and the ambient wash (1100) so the guardian reads
+        // clearly day and night; the seed drawer (1200, created later) still
+        // slides over her.
+        this.npcGroup = this.add.container(anchorX, anchorY).setDepth(NPC_DEPTH);
+
+        // Sprite scaled up 1.4x for touch visibility, origin pinned to the
+        // exact centre (0.5, 0.5). At local y = NPC_SPRITE_DY the sprite
+        // spans y ∈ [-270, 114], leaving the name label at y = 132 cleanly
+        // centred right under the sprite's bottom edge.
+        const npcSprite = this.add.image(0, NPC_SPRITE_DY, npcTextureKey)
+            .setOrigin(0.5, 0.5)
             .setDisplaySize(344 * 1.4, 274 * 1.4);
         this.npcSprite = npcSprite;
 
-        /* ---- Hào Quang — radiant Celestial Aura ----
-           TWO layers, both Phaser.BlendModes.ADD so the halo composites
-           additively (light on top of the scene, never a dark disc):
-           · halo    — the wide soft radial glow behind the fairy
-           · core    — a tighter inner radiance right behind her silhouette
-           Both breathe on a smooth sine yoyo (scale 0.95→1.08, alpha per
-           layer). They are stored on the scene as this.npcAura / this.npcAuraCore
-           and re-tinted per realm (lavender on the island, frost blue in Hàn Cốc).
+        /* ---- Hào Quang — radiant Celestial Aura (DECORATIVE: guarded) ----
+           Both layers breathe on a smooth sine yoyo (scale 0.95→1.08, alpha
+           per layer) and are stored on the scene as this.npcAura /
+           this.npcAuraCore, re-tinted per realm through the halo factory's
+           procedural fallback (the premium sacred_halo art ships untinted).
 
            NIGHT IMMUNITY: the whole world below LAYERS.AMBIENT is darkened by
-           WeatherView's multiply wash at midnight, but the NPC container rides
-           D.NPC (200)… which is still BELOW 1100. To keep her radiantly lit
-           after dusk the aura layers are mirrored ABOVE the wash while night
-           light is active — see syncNpcNightRadiance(), driven by the lamp
-           level. The sprite itself is bright art with additive halo — it reads
-           self-illuminated against the darkened garden. */
+           WeatherView's multiply wash at midnight, but the NPC container
+           rides depth 1200 — ABOVE the wash — so the guardian and her halo
+           stay radiantly lit after dusk. syncNpcNightRadiance() additionally
+           mirrors a soft light pool just above the wash (AMBIENT + 2). */
         const auraTint = npc.auraTint ?? 0xc9b2ff;
-        this.npcAura = this.add.image(0, -44, 'glow')
-            .setBlendMode(Phaser.BlendModes.ADD)
-            .setTint(auraTint)
-            .setAlpha(0.5)
-            .setScale(0.95);
-        this.npcAuraCore = this.add.image(0, -44, 'glow')
-            .setBlendMode(Phaser.BlendModes.ADD)
-            .setTint(0xffffff)
-            .setAlpha(0.28)
-            .setScale(0.42);
+        try {
+            this.npcAura = this.createHaloSprite(0, NPC_SPRITE_DY, {
+                tint: auraTint, alpha: 0.5, scaleX: 0.95, scaleY: 0.95,
+                blendMode: Phaser.BlendModes.ADD,
+            });
+            this.npcAuraCore = this.createHaloSprite(0, NPC_SPRITE_DY, {
+                tint: 0xffffff, alpha: 0.28, scaleX: 0.42, scaleY: 0.42,
+                blendMode: Phaser.BlendModes.ADD,
+            });
 
-        // Breathing halo: scale 0.95 → 1.08, alpha 0.5 → 0.85 (spec)
-        this.npcAuraTween = this.tweens.add({
-            targets: this.npcAura,
-            scale: { from: 0.95, to: 1.08 },
-            alpha: { from: 0.5, to: 0.85 },
-            duration: 2400,
-            yoyo: true,
-            repeat: -1,
-            ease: 'Sine.easeInOut',
-        });
-        // Tighter inner core breathes slightly faster, subtler range
-        this.tweens.add({
-            targets: this.npcAuraCore,
-            scale: { from: 0.38, to: 0.5 },
-            alpha: { from: 0.22, to: 0.4 },
-            duration: 1700,
-            yoyo: true,
-            repeat: -1,
-            ease: 'Sine.easeInOut',
-        });
+            // Breathing halo: scale 0.95 → 1.08, alpha 0.5 → 0.85 (spec)
+            this.npcAuraTween = this.tweens.add({
+                targets: this.npcAura,
+                scale: { from: 0.95, to: 1.08 },
+                alpha: { from: 0.5, to: 0.85 },
+                duration: 2400,
+                yoyo: true,
+                repeat: -1,
+                ease: 'Sine.easeInOut',
+            });
+            // Tighter inner core breathes slightly faster, subtler range
+            this.tweens.add({
+                targets: this.npcAuraCore,
+                scale: { from: 0.38, to: 0.5 },
+                alpha: { from: 0.22, to: 0.4 },
+                duration: 1700,
+                yoyo: true,
+                repeat: -1,
+                ease: 'Sine.easeInOut',
+            });
+        } catch (e) { console.warn(e); }
 
         // name tag
         this.npcName = this.add.text(0, 132, npc.name, {
             fontFamily: DIALOG_FONT, fontSize: '22px', color: '#dce8ff',
             align: 'center', stroke: '#1b1140', strokeThickness: 4,
         }).setOrigin(0.5);
-        // interaction zone (generous, covers sprite + ribbons) — explicit Rectangle hitArea
-        // scale up hit area to match 1.4x sprite size, useHandCursor for clear feedback
-        const npcHitArea = new Phaser.Geom.Rectangle(-280, -200, 560, 480);
-        const npcZone = this.add.zone(0, -20, 560, 480)
-            .setInteractive(npcHitArea, Phaser.Geom.Rectangle.Contains)
-            .setUseHandCursor(true);
-        // Stop propagation so clicks never miss or misfire
+        // Interaction zone (generous, covers sprite + ribbons + label).
+        // HOTFIX: setInteractive({ useHandCursor }) is the real Phaser API —
+        // the old chained .setUseHandCursor() call does not exist and threw,
+        // killing create() before the plots/HUD could render. The zone-sized
+        // default hit area is centred on the zone (the previous manual
+        // Rectangle was offset by half a zone).
+        const npcZone = this.add.zone(0, -40, 560, 540)
+            .setInteractive({ useHandCursor: true });
+        // The re-anchored guardian hovers over the garden's right edge, and
+        // input.topOnly means her zone would swallow plot taps beneath it.
+        // Plots keep pointer priority: a tap that lands on a plot farms the
+        // plot; only taps off the grid open her dialog.
         npcZone.on('pointerdown', (pointer, localX, localY, event) => {
             if (event) event.stopPropagation();
+            const tile = this.tileAt(pointer.x, pointer.y);
+            if (tile) {
+                this.handleTileClick(tile);
+                return;
+            }
             this.onNpcClick();
         });
 
-        this.npcGroup.add([this.npcAura, this.npcAuraCore, npcSprite, this.npcName, npcZone]);
+        this.npcGroup.add([this.npcAura, this.npcAuraCore, npcSprite, this.npcName, npcZone].filter(Boolean));
 
         // Smooth sinusoidal idle floating: yoyo between -4px and +4px around
         // the deck anchor — she never touches the stone, she hovers.
-        this.npcFloatTween = this.tweens.add({
-            targets: this.npcGroup,
-            y: { from: NPC_POS.y - NPC_FLOAT_AMP, to: NPC_POS.y + NPC_FLOAT_AMP },
-            duration: 1500,
-            yoyo: true,
-            repeat: -1,
-            ease: 'Sine.easeInOut',
-        });
-        // faint spirit motes drifting up from her ribbons
-        this.npcSparkles = this.add.particles(0, 0, 'spark', {
-            x: { min: NPC_POS.x - 150, max: NPC_POS.x + 150 },
-            y: { min: NPC_POS.y - 160, max: NPC_POS.y + 40 },
-            speedY: { min: -20, max: -8 },
-            speedX: { min: -8, max: 8 },
-            lifespan: 2800,
-            scale: { start: 0.32, end: 0 },
-            alpha: { start: 0.5, end: 0 },
-            tint: [0xd8c3ff, 0x9fd8ff, 0xffe9c4],
-            frequency: 460,
-            blendMode: Phaser.BlendModes.ADD,
-        }).setDepth(D.NPC + 5);
+        // (decorative: guarded)
+        try {
+            this.npcFloatTween = this.tweens.add({
+                targets: this.npcGroup,
+                y: { from: anchorY - NPC_FLOAT_AMP, to: anchorY + NPC_FLOAT_AMP },
+                duration: 1500,
+                yoyo: true,
+                repeat: -1,
+                ease: 'Sine.easeInOut',
+            });
+        } catch (e) { console.warn(e); }
+        // faint spirit motes drifting up from her ribbons (decorative: guarded)
+        try {
+            this.npcSparkles = this.add.particles(0, 0, 'spark', {
+                x: { min: anchorX - 150, max: anchorX + 150 },
+                y: { min: anchorY - 160, max: anchorY + 40 },
+                speedY: { min: -20, max: -8 },
+                speedX: { min: -8, max: 8 },
+                lifespan: 2800,
+                scale: { start: 0.32, end: 0 },
+                alpha: { start: 0.5, end: 0 },
+                tint: [0xd8c3ff, 0x9fd8ff, 0xffe9c4],
+                frequency: 460,
+                blendMode: Phaser.BlendModes.ADD,
+            }).setDepth(NPC_DEPTH + 1);
+        } catch (e) { console.warn(e); }
 
-        // Midnight radiance mirror (see syncNpcNightRadiance)
-        this.syncNpcNightRadiance(this.lampLevel ?? 0);
+        // Midnight radiance mirror (see syncNpcNightRadiance) — decorative
+        try { this.syncNpcNightRadiance(this.lampLevel ?? 0); } catch (e) { console.warn(e); }
 
         // Hoa Các entry button on the HUD (also opens via the NPC herself)
         this.createShopEntryPoint();
@@ -853,33 +978,44 @@ export default class GardenScene extends Phaser.Scene {
      * fades out (the world render below is already fully lit).
      */
     syncNpcNightRadiance(level = 0) {
-        const v = Phaser.Math.Clamp(level ?? 0, 0, 1);
-        const npc = this.getActiveNpcConfig();
-        if (v <= 0.02) {
-            if (this.npcNightGlow) {
-                this.npcNightGlow.destroy();
-                this.npcNightGlow = null;
+        // decorative night chrome — a failure here must never bubble up into
+        // the weather tick that drives it
+        try {
+            const v = Phaser.Math.Clamp(level ?? 0, 0, 1);
+            const npc = this.getActiveNpcConfig();
+            if (v <= 0.02) {
+                if (this.npcNightGlow) {
+                    this.npcNightGlow.destroy();
+                    this.npcNightGlow = null;
+                }
+                return;
             }
-            return;
+            const pos = this.npcPos ?? NPC_POS;
+            if (!this.npcNightGlow) {
+                // soft light pool above the wash — stays tintable per realm
+                // (sacred: false) even when the premium halo art is loaded
+                this.npcNightGlow = this.createHaloSprite(pos.x, pos.y + NPC_SPRITE_DY, {
+                    tint: npc.auraTint ?? 0xc9b2ff, alpha: 0.5,
+                    blendMode: Phaser.BlendModes.ADD,
+                    depth: LAYERS.AMBIENT + 2, sacred: false,
+                });
+                this.tweens.add({
+                    targets: this.npcNightGlow,
+                    scale: { from: 1.0, to: 1.12 },
+                    alpha: { from: 0.5, to: 0.78 },
+                    duration: 2400,
+                    yoyo: true,
+                    repeat: -1,
+                    ease: 'Sine.easeInOut',
+                });
+            }
+            this.npcNightGlow.setPosition(pos.x, pos.y + NPC_SPRITE_DY);
+            this.npcNightGlow.setTint(npc.auraTint ?? 0xc9b2ff);
+            this.npcNightGlow.setAlpha(0.1 + v * 0.42);
+            this.npcNightGlow.setScale(1.7 + v * 0.5, 1.45 + v * 0.4);
+        } catch (e) {
+            console.warn(e);
         }
-        if (!this.npcNightGlow) {
-            this.npcNightGlow = this.add.image(NPC_POS.x, NPC_POS.y - 44, 'glow')
-                .setBlendMode(Phaser.BlendModes.ADD)
-                .setDepth(LAYERS.AMBIENT + 2);
-            this.tweens.add({
-                targets: this.npcNightGlow,
-                scale: { from: 1.0, to: 1.12 },
-                alpha: { from: 0.5, to: 0.78 },
-                duration: 2400,
-                yoyo: true,
-                repeat: -1,
-                ease: 'Sine.easeInOut',
-            });
-        }
-        this.npcNightGlow.setPosition(NPC_POS.x, NPC_POS.y - 44);
-        this.npcNightGlow.setTint(npc.auraTint ?? 0xc9b2ff);
-        this.npcNightGlow.setAlpha(0.1 + v * 0.42);
-        this.npcNightGlow.setScale(1.7 + v * 0.5, 1.45 + v * 0.4);
     }
 
     onNpcClick() {
@@ -894,7 +1030,7 @@ export default class GardenScene extends Phaser.Scene {
     /** HUD entry point — the "Hoa Các" pagoda button (right column stack:
      *  codex 322 → alchemy 462 → shop 602, clear of every other widget). */
     createShopEntryPoint() {
-        const button = this.add.container(958, 602).setDepth(3000);
+        const button = this.add.container(958, 602).setDepth(HUD_DEPTH);
         const bg = this.add.graphics();
         bg.fillStyle(0x1a0f2e, 0.9).lineStyle(2, 0xdfb15b, 0.85);
         bg.fillRoundedRect(-112, -34, 224, 68, 16).strokeRoundedRect(-112, -34, 224, 68, 16);
@@ -1105,28 +1241,32 @@ export default class GardenScene extends Phaser.Scene {
     }
 
     openDialog() {
-        // Refresh the quest state from live game/economy data every time the
-        // khung thoại opens, so the quest-list progress counters are always
-        // current no matter which entry point opened it.
-        this.dialog.updateQuestState({
-            hasFirstBloom: this.bloomCount >= 1,
-            totalBlooms: this.economy.stats.totalBlooms,
-            currentBlooms: this.tiles.flat().filter(t => t.gridData.state === STATE.BLOOMING).length,
-            hasRareSeed: (this.selectedSeed?.id === 'flower_rare_nguyet_cuc') ||
-                         this.economy.getInventoryCount('flower_rare_nguyet_cuc') > 0,
-            spiritStones: this.economy.spiritStones,
-            completedQuests: this.economy.completedQuests,
-            maxSimultaneousBlooms: this.economy.stats.maxSimultaneousBlooms,
-            totalStonesEarned: this.economy.stats.totalStonesEarned,
-            rareBlooms: this.economy.stats.rareBlooms,
-            totalHarvests: this.economy.stats.totalHarvests,
-        });
-        const node = this.dialog.startDialogue();
-        if (!node) return;
-        this.dialogVisible = true;
-        this.dialogBox.setVisible(true).setAlpha(0);
-        this.tweens.add({ targets: this.dialogBox, alpha: 1, duration: 200 });
-        this.renderDialogNode(node);
+        // Quest dialog is NON-ESSENTIAL (hotfix guard): if the dialog box or
+        // quest data failed to build, warn and keep the garden playable.
+        try {
+            // Refresh the quest state from live game/economy data every time the
+            // khung thoại opens, so the quest-list progress counters are always
+            // current no matter which entry point opened it.
+            this.dialog.updateQuestState({
+                hasFirstBloom: this.bloomCount >= 1,
+                totalBlooms: this.economy.stats.totalBlooms,
+                currentBlooms: this.tiles.flat().filter(t => t.gridData.state === STATE.BLOOMING).length,
+                hasRareSeed: (this.selectedSeed?.id === 'flower_rare_nguyet_cuc') ||
+                             this.economy.getInventoryCount('flower_rare_nguyet_cuc') > 0,
+                spiritStones: this.economy.spiritStones,
+                completedQuests: this.economy.completedQuests,
+                maxSimultaneousBlooms: this.economy.stats.maxSimultaneousBlooms,
+                totalStonesEarned: this.economy.stats.totalStonesEarned,
+                rareBlooms: this.economy.stats.rareBlooms,
+                totalHarvests: this.economy.stats.totalHarvests,
+            });
+            const node = this.dialog.startDialogue();
+            if (!node) return;
+            this.dialogVisible = true;
+            this.dialogBox.setVisible(true).setAlpha(0);
+            this.tweens.add({ targets: this.dialogBox, alpha: 1, duration: 200 });
+            this.renderDialogNode(node);
+        } catch (e) { console.warn(e); }
     }
 
     closeDialog() {
@@ -1144,14 +1284,18 @@ export default class GardenScene extends Phaser.Scene {
         this.dialogText.setText(node.text);
         let contentBottom = this.dialogText.y + this.dialogText.height;
         if (node.questList) {
-            let ry = this.dialogText.y + this.dialogText.height + 16;
-            for (const row of this.dialog.getQuestRows()) {
-                const rowContainer = this.buildQuestRow(row, ry);
-                this.dialogContent.add(rowContainer);
-                this.questRowContainers.push(rowContainer);
-                ry += 52;
-            }
-            contentBottom = ry - 8;
+            // quest rows are non-essential: a quest-data failure must never
+            // take the dialog (or the scene) down with it
+            try {
+                let ry = this.dialogText.y + this.dialogText.height + 16;
+                for (const row of this.dialog.getQuestRows()) {
+                    const rowContainer = this.buildQuestRow(row, ry);
+                    this.dialogContent.add(rowContainer);
+                    this.questRowContainers.push(rowContainer);
+                    ry += 52;
+                }
+                contentBottom = ry - 8;
+            } catch (e) { console.warn(e); }
         }
         // anything taller than 180px becomes scrollable instead of overflowing
         this.dialogScrollMax = Math.max(0, Math.ceil(contentBottom - DLG.bodyTop - DLG.bodyMaxH));
@@ -1205,8 +1349,32 @@ export default class GardenScene extends Phaser.Scene {
         }
     }
 
-    /* ============================ GRID ============================ */
+    /* ============================ PLOTS (6×6 iso grid) ============================ */
+    /** Back-compat alias — the plot grid builder (hotfix rename of createGrid). */
     createGrid() {
+        return this.createPlots();
+    }
+
+    /**
+     * Default plot texture — the last-resort key when a custom realm or soil
+     * texture is missing. Prefers the canonical 'tile_plot' name when such a
+     * texture exists, otherwise the base 'tile_soil' diamond, which
+     * ensureFallbackTextures() always builds procedurally in create().
+     */
+    plotFallbackTexture() {
+        if (this.textures.exists('tile_plot')) return 'tile_plot';
+        return 'tile_soil'; // guaranteed present (procedural fallback)
+    }
+
+    /**
+     * The 6×6 plot grid — ESSENTIAL (the garden itself), hardened:
+     *  · every plot resolves its texture through a realm tile → soil tile →
+     *    default ('tile_plot'/'tile_soil') chain, so a 404 on a custom realm
+     *    soil texture can never render a missing-texture square;
+     *  · every plot is interactive and re-arms its diamond hit area if
+     *    anything disabled it, so the grid ALWAYS receives pointer input.
+     */
+    createPlots() {
         this.tileHighlight = this.add.image(-400, -400, 'tile_highlight').setVisible(false).setDepth(D.TILES + 5);
         // Bí Cảnh: when the active realm uses uniform tiles (e.g. FROST_REALM),
         // every plot renders with the realm tile texture regardless of soil type.
@@ -1220,7 +1388,10 @@ export default class GardenScene extends Phaser.Scene {
                 const saved = this.savedPlots?.[r]?.[c];
                 const data = saved ? hydratePlotData(saved, r, c) : createPlotData(r, c);
                 const texKey = realmTileKey ?? this.soilTextureKey(data.soilType);
-                const tile = this.add.image(pos.x, pos.y, texKey)
+                // HOTFIX: a realm/soil texture that failed to load must never
+                // blank the grid — fall back to the default plot texture.
+                const plotTexture = this.textures.exists(texKey) ? texKey : this.plotFallbackTexture();
+                const tile = this.add.image(pos.x, pos.y, plotTexture)
                     .setInteractive(
                         new Phaser.Geom.Polygon(IsoMath.hitAreaPoints),
                         Phaser.Geom.Polygon.Contains
@@ -1229,6 +1400,14 @@ export default class GardenScene extends Phaser.Scene {
                     .setScale(1.02);
                 tile.setOrigin(0.5, 32 / tile.height);
                 tile.gridData = data;
+                // plots MUST receive pointer input — re-arm the hit area if
+                // anything disabled it
+                if (!tile.input) {
+                    tile.setInteractive(
+                        new Phaser.Geom.Polygon(IsoMath.hitAreaPoints),
+                        Phaser.Geom.Polygon.Contains
+                    );
+                }
                 tile.on('pointerdown', () => this.handleTileClick(tile));
                 tile.on('pointerover', () => this.hoverTile(tile, true));
                 tile.on('pointerout', () => this.hoverTile(tile, false));
@@ -1450,7 +1629,7 @@ export default class GardenScene extends Phaser.Scene {
 
     /** HUD entry point for the Spirit Beast Sanctuary (Vườn Linh Thú). */
     createBeastEntryPoint() {
-        const button = this.add.container(700, 392).setDepth(3000);
+        const button = this.add.container(700, 392).setDepth(HUD_DEPTH);
         const bg = this.add.graphics();
         bg.fillStyle(0x1a0f2e, 0.9).lineStyle(2, 0x4fd1a5, 0.8);
         bg.fillRoundedRect(-112, -34, 224, 68, 16).strokeRoundedRect(-112, -34, 224, 68, 16);
@@ -1484,7 +1663,7 @@ export default class GardenScene extends Phaser.Scene {
 
     /** HUD entry point for Bí Cảnh (Secret Realms) — portal button. */
     createRealmEntryPoint() {
-        const button = this.add.container(300, 392).setDepth(3000);
+        const button = this.add.container(300, 392).setDepth(HUD_DEPTH);
         const bg = this.add.graphics();
         bg.fillStyle(0x1a0f2e, 0.9).lineStyle(2, 0x7ff7ff, 0.8);
         bg.fillRoundedRect(-112, -34, 224, 68, 16).strokeRoundedRect(-112, -34, 224, 68, 16);
@@ -1761,7 +1940,7 @@ export default class GardenScene extends Phaser.Scene {
         // Visual: sparkle burst + reward popup
         const seed = SEED_BY_ID[seedId];
         this.emitPetals(tile.x, tile.y - 26, seedId, codexBonus.nightGlow ? 20 : 14);
-        this.sparks.emitParticleAt(tile.x, tile.y - 26, 10);
+        this.sparks?.emitParticleAt(tile.x, tile.y - 26, 10);
 
         // Destroy bloom sprites
         const bloomSprite = data.bloomSprite;
@@ -1841,20 +2020,24 @@ export default class GardenScene extends Phaser.Scene {
     }
 
     showQuestCompletion(quests) {
+        // quest banners are pure celebration chrome — guarded so a failure
+        // can never interrupt the harvest flow that triggered them
         quests.forEach((q, i) => {
             this.time.delayedCall(400 + i * 600, () => {
-                const banner = this.add.text(W / 2, 250 + i * 70, `🏆 ${q.name} — +${q.reward} 💎`, {
-                    fontFamily: 'Georgia, serif', fontSize: '34px', color: '#ffe9a8', fontStyle: 'bold',
-                    stroke: '#7a4a1e', strokeThickness: 8,
-                }).setOrigin(0.5).setDepth(D.TOAST - 20).setScale(0.5).setAlpha(0);
-                this.tweens.add({
-                    targets: banner, scale: 1, alpha: 1, duration: 400, ease: 'Back.easeOut',
-                    onComplete: () => {
-                        this.tweens.add({ targets: banner, alpha: 0, y: banner.y - 40, delay: 1500, duration: 500 });
-                    },
-                });
-                this.audio.chime(1046.5, { gain: 0.1 });
-                this.audio.chime(1318.5, { gain: 0.08, when: 0.1 });
+                try {
+                    const banner = this.add.text(W / 2, 250 + i * 70, `🏆 ${q.name} — +${q.reward} 💎`, {
+                        fontFamily: 'Georgia, serif', fontSize: '34px', color: '#ffe9a8', fontStyle: 'bold',
+                        stroke: '#7a4a1e', strokeThickness: 8,
+                    }).setOrigin(0.5).setDepth(D.TOAST - 20).setScale(0.5).setAlpha(0);
+                    this.tweens.add({
+                        targets: banner, scale: 1, alpha: 1, duration: 400, ease: 'Back.easeOut',
+                        onComplete: () => {
+                            this.tweens.add({ targets: banner, alpha: 0, y: banner.y - 40, delay: 1500, duration: 500 });
+                        },
+                    });
+                    this.audio.chime(1046.5, { gain: 0.1 });
+                    this.audio.chime(1318.5, { gain: 0.08, when: 0.1 });
+                } catch (e) { console.warn(e); }
             });
         });
     }
@@ -2278,7 +2461,7 @@ export default class GardenScene extends Phaser.Scene {
         }).setDepth(D.HUD);
 
         // Harmony badge
-        const hud = this.add.container(860, 72).setDepth(3000);
+        const hud = this.add.container(860, 72).setDepth(HUD_DEPTH);
         const badge = this.add.graphics();
         badge.fillStyle(0x241540, 0.92);
         badge.lineStyle(3, C.gold, 0.9);
@@ -2294,7 +2477,7 @@ export default class GardenScene extends Phaser.Scene {
         hud.add([badge, lotus, this.harmonyText, this.harmonyValue]);
 
         // Spirit Stones badge
-        const stoneHud = this.add.container(860, 162).setDepth(3000);
+        const stoneHud = this.add.container(860, 162).setDepth(HUD_DEPTH);
         const stoneBadge = this.add.graphics();
         stoneBadge.fillStyle(0x241540, 0.92);
         stoneBadge.lineStyle(3, 0xb26bff, 0.9);
@@ -2363,7 +2546,7 @@ export default class GardenScene extends Phaser.Scene {
          Back-ease bounce to 1.0x on pointerup) on the inner container.  */
     makeActionButton({ x, baseColor, innerColor, hoverStroke, iconKey, iconW, iconH, label, labelColor, labelStroke, phase = 0, onTap }) {
         // Outer: position + idle breathing. Inner: visuals + press feedback.
-        const outer = this.add.container(x, BTN_Y).setDepth(3000);
+        const outer = this.add.container(x, BTN_Y).setDepth(HUD_DEPTH);
         const inner = this.add.container(0, 0);
 
         const ring = this.add.graphics();
@@ -2872,7 +3055,7 @@ export default class GardenScene extends Phaser.Scene {
 
         // petal burst + sparkles
         this.emitPetals(tile.x, tile.y - 26, seed.id, 22);
-        this.sparks.emitParticleAt(tile.x, tile.y - 26, 7);
+        this.sparks?.emitParticleAt(tile.x, tile.y - 26, 7);
 
         this.tweens.add({ targets: bloom, scale: 0.85, alpha: 1, duration: 520, ease: 'Back.easeOut' });
         this.tweens.add({
@@ -2931,8 +3114,8 @@ export default class GardenScene extends Phaser.Scene {
             targets: halo, scale: { from: 0.6, to: 7 }, alpha: 0, duration: 1600, ease: 'Cubic.easeOut',
             onComplete: () => halo.destroy(),
         });
-        this.petalRain.explode(160, W / 2, 300);
-        this.time.delayedCall(900, () => this.petalRain.explode(120, W / 2, 300));
+        this.petalRain?.explode(160, W / 2, 300);
+        this.time.delayedCall(900, () => this.petalRain?.explode(120, W / 2, 300));
         [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) => this.audio.chime(f, { gain: 0.1, when: i * 0.14 }));
         const banner = this.add.text(W / 2, 480, '✦ HOA VIÊN ĐẠI THÀNH ✦', {
             fontFamily: 'Georgia, serif', fontSize: '60px', color: '#ffe9a8', fontStyle: 'bold',
@@ -3021,6 +3204,10 @@ export default class GardenScene extends Phaser.Scene {
     }
 
     createBloomRadiance() {
-        this.add.image(W / 2, 1100, 'glow').setTint(0x3a2a72).setAlpha(0.25).setScale(5.4, 3.2).setDepth(D.ISLAND_AURA - 1);
+        // warm radiance under the whole garden — decorative, halo-factory safe
+        this.createHaloSprite(W / 2, 1100, {
+            tint: 0x3a2a72, alpha: 0.25, scaleX: 5.4, scaleY: 3.2,
+            blendMode: Phaser.BlendModes.NORMAL, depth: D.ISLAND_AURA - 1, sacred: false,
+        });
     }
 }

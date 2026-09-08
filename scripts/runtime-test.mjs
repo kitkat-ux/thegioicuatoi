@@ -162,13 +162,26 @@ check('dialog uses Unicode font stack (system-ui)', scene.dialogText.style.fontF
 
 // ---- NPC exists ----
 check('NPC group created', scene.npcGroup !== undefined);
-check('NPC at lower bridge deck (890, 1345)', scene.npcGroup.x === 890 && scene.npcGroup.y >= 1341 && scene.npcGroup.y <= 1349);
+// HOTFIX re-anchor: the guardian rides at 78% × 64% of the camera
+// (842.4, 1228.8 on the 1080×1920 stage), depth 1200 — above the plot grid
+// and the ambient wash, level with the seed drawer.
+const NPC_ANCHOR_X = 1080 * 0.78;
+const NPC_ANCHOR_Y = 1920 * 0.64;
+check('NPC re-anchored at (78% width, 64% height), depth 1200',
+    Math.abs(scene.npcGroup.x - NPC_ANCHOR_X) < 0.01
+    && scene.npcGroup.y >= NPC_ANCHOR_Y - 4.5 && scene.npcGroup.y <= NPC_ANCHOR_Y + 4.5 // idle float ±4px
+    && scene.npcGroup.depth === 1200);
+check('NPC sprite origin pinned to centre (0.5, 0.5), label centred under it',
+    scene.npcSprite.originX === 0.5 && scene.npcSprite.originY === 0.5
+    && scene.npcName.y > scene.npcSprite.y + scene.npcSprite.displayHeight / 2
+    && scene.npcName.originX === 0.5);
 check('NPC idle float tween is sinusoidal yoyo ±4px', (() => {
     const t = scene.npcFloatTween;
     if (!t) return false;
     const yd = t.data?.find?.((d) => d.key === 'y');
-    // TweenData exposes start/end (Phaser 3.90); from/to yoyo around y=1345
-    return !!yd && Math.round(yd.start) === 1341 && Math.round(yd.end) === 1349 && yd.yoyo === true;
+    // TweenData exposes start/end (Phaser 3.90); from/to yoyo around the anchor
+    return !!yd && Math.abs(yd.start - (NPC_ANCHOR_Y - 4)) < 0.01
+        && Math.abs(yd.end - (NPC_ANCHOR_Y + 4)) < 0.01 && yd.yoyo === true;
 })());
 
 // ---- Floating island (Linh Đảo Phù Vân) ----
@@ -373,11 +386,18 @@ check('dialog closes', scene.dialogVisible === false);
 /* ==================== CỬA HÀNG HOA VIÊN (Garden Shop) ==================== */
 {
     const eco = scene.economy;
-    check('Hoa Các HUD button exists on the top HUD', !!scene.shopButton && scene.shopButton.depth === LAYERS.HUD);
+    // HUD chrome (currencies, side buttons, action bar) sits at hotfix depth 2500
+    check('Hoa Các HUD button exists on the top HUD', !!scene.shopButton && scene.shopButton.depth === 2500);
+    // NPC tap opens the realm dialog first (two-step: dialog → "Ghé Thăm Hoa Các")
     scene.onNpcClick();
     await new Promise((r) => setTimeout(r, 350));
+    check('NPC tap opens the quest dialog (two-step route)', scene.dialogVisible === true && scene.shopModal?.isOpen() !== true);
+    scene.closeDialog();
+    await new Promise((r) => setTimeout(r, 350));
+    scene.openGardenShop();
+    await new Promise((r) => setTimeout(r, 350));
     const shop = scene.shopModal;
-    check('NPC tap opened the shop (not the quest dialog)', !!shop && shop.isOpen() === true && scene.dialogVisible === false);
+    check('Hoa Các opens through its entry point (HUD button route)', !!shop && shop.isOpen() === true && scene.dialogVisible === false);
     check('Shop overlay is blocked-UI + renders above the ambient wash', scene.uiBlocked() === true && shop.getSnapshot().aboveAmbient === true);
 
     // Kỳ Hoa Dị Thảo tab: standard seeds of the default garden

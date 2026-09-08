@@ -558,7 +558,7 @@ export default class GardenScene extends Phaser.Scene {
 
     /** Small HUD entry point for the presentation-only fishing modal. */
     createFishingEntryPoint() {
-        const button = this.add.container(700, 302).setDepth(D.HUD);
+        const button = this.add.container(700, 302).setDepth(3000);
         const bg = this.add.graphics();
         bg.fillStyle(0x1a0f2e, 0.9).lineStyle(2, C.tealGlow ?? C.cyan, 0.8);
         bg.fillRoundedRect(-112, -34, 224, 68, 16).strokeRoundedRect(-112, -34, 224, 68, 16);
@@ -735,12 +735,13 @@ export default class GardenScene extends Phaser.Scene {
         // deck (x: 890, y: 1345), body facing left toward the garden grid.
         // The sprite + label follow the realm (Tiên Nữ Hoa Giang on the island,
         // Băng Băng Tiên Tử in the Frost Realm — see RealmsData `npc`).
+        // NPC scaled up 1.4x for better touch visibility.
         const npc = this.getActiveNpcConfig();
         const npcTextureKey = this.textures.exists(npc.spriteKey) ? npc.spriteKey : 'npc_tien_nu';
 
         this.npcGroup = this.add.container(NPC_POS.x, NPC_POS.y).setDepth(D.NPC);
         const npcSprite = this.add.image(0, -44, npcTextureKey)
-            .setDisplaySize(344, 274);
+            .setDisplaySize(344 * 1.4, 274 * 1.4);
         this.npcSprite = npcSprite;
 
         /* ---- Hào Quang — radiant Celestial Aura ----
@@ -797,9 +798,17 @@ export default class GardenScene extends Phaser.Scene {
             fontFamily: DIALOG_FONT, fontSize: '22px', color: '#dce8ff',
             align: 'center', stroke: '#1b1140', strokeThickness: 4,
         }).setOrigin(0.5);
-        // interaction zone (generous, covers sprite + ribbons)
-        const npcZone = this.add.zone(0, -20, 400, 360).setInteractive();
-        npcZone.on('pointerdown', () => this.onNpcClick());
+        // interaction zone (generous, covers sprite + ribbons) — explicit Rectangle hitArea
+        // scale up hit area to match 1.4x sprite size, useHandCursor for clear feedback
+        const npcHitArea = new Phaser.Geom.Rectangle(-280, -200, 560, 480);
+        const npcZone = this.add.zone(0, -20, 560, 480)
+            .setInteractive(npcHitArea, Phaser.Geom.Rectangle.Contains)
+            .setUseHandCursor(true);
+        // Stop propagation so clicks never miss or misfire
+        npcZone.on('pointerdown', (pointer, localX, localY, event) => {
+            if (event) event.stopPropagation();
+            this.onNpcClick();
+        });
 
         this.npcGroup.add([this.npcAura, this.npcAuraCore, npcSprite, this.npcName, npcZone]);
 
@@ -876,17 +885,16 @@ export default class GardenScene extends Phaser.Scene {
     onNpcClick() {
         this.audio.ensure();
         this.audio.chime(880, { gain: 0.06 });
-        // Cửa Hàng Hoa Viên: tapping the realm guardian opens her shop modal
-        // (Hoa Các). The quest dialog hub stays reachable from the shop
-        // header's "Nhiệm Vụ" button, so nothing is lost.
-        this.openGardenShop();
+        // Realm guardian NPC tap: show realm-aware dialogue with
+        // "Nhận Nhiệm Vụ Bí Cảnh" / "Ghé Thăm Hoa Các" choice.
+        this.openDialog();
     }
 
     /* ====================== CỬA HÀNG HOA VIÊN (GARDEN SHOP) ====================== */
     /** HUD entry point — the "Hoa Các" pagoda button (right column stack:
      *  codex 322 → alchemy 462 → shop 602, clear of every other widget). */
     createShopEntryPoint() {
-        const button = this.add.container(958, 602).setDepth(D.HUD);
+        const button = this.add.container(958, 602).setDepth(3000);
         const bg = this.add.graphics();
         bg.fillStyle(0x1a0f2e, 0.9).lineStyle(2, 0xdfb15b, 0.85);
         bg.fillRoundedRect(-112, -34, 224, 68, 16).strokeRoundedRect(-112, -34, 224, 68, 16);
@@ -1442,7 +1450,7 @@ export default class GardenScene extends Phaser.Scene {
 
     /** HUD entry point for the Spirit Beast Sanctuary (Vườn Linh Thú). */
     createBeastEntryPoint() {
-        const button = this.add.container(700, 392).setDepth(D.HUD);
+        const button = this.add.container(700, 392).setDepth(3000);
         const bg = this.add.graphics();
         bg.fillStyle(0x1a0f2e, 0.9).lineStyle(2, 0x4fd1a5, 0.8);
         bg.fillRoundedRect(-112, -34, 224, 68, 16).strokeRoundedRect(-112, -34, 224, 68, 16);
@@ -1476,7 +1484,7 @@ export default class GardenScene extends Phaser.Scene {
 
     /** HUD entry point for Bí Cảnh (Secret Realms) — portal button. */
     createRealmEntryPoint() {
-        const button = this.add.container(300, 392).setDepth(D.HUD);
+        const button = this.add.container(300, 392).setDepth(3000);
         const bg = this.add.graphics();
         bg.fillStyle(0x1a0f2e, 0.9).lineStyle(2, 0x7ff7ff, 0.8);
         bg.fillRoundedRect(-112, -34, 224, 68, 16).strokeRoundedRect(-112, -34, 224, 68, 16);
@@ -1506,19 +1514,30 @@ export default class GardenScene extends Phaser.Scene {
     }
 
     /**
-     * Switch to a different realm: save current plots, fade-to-white transition,
-     * then restart GardenScene with the new realm's background/tiles/saved data.
+     * Switch to a different realm: save current plots, preserve global currency,
+     * fade-to-white transition, then restart GardenScene with the new realm's
+     * background/tiles/saved data.
+     * 
+     * CRITICAL: Currency (spiritStones, harmony) is GLOBAL and NEVER reset on
+     * realm switch. Only plot arrays and scene theme data change.
      */
     switchRealm(realmId) {
         if (realmId === this.activeRealmId) {
             this.realmModal?.close();
             return;
         }
-        // Save current realm's plot state before switching
+        // 1. Save current realm's plot state before switching
         this.persistCurrentRealmPlots();
-        // Close the modal
+        
+        // 2. Save global currency to localStorage (persists across realm switches)
+        if (this.economy) {
+            this.economy.saveGlobalState();
+        }
+        
+        // 3. Close the modal
         this.realmModal?.close();
-        // Smooth fade-to-white transition overlay
+        
+        // 4. Smooth fade-to-white transition overlay
         const fade = this.add.rectangle(W / 2, H / 2, W, H, 0xffffff, 0).setDepth(9999);
         this.tweens.add({
             targets: fade,
@@ -1526,7 +1545,7 @@ export default class GardenScene extends Phaser.Scene {
             duration: 600,
             ease: 'Cubic.easeIn',
             onComplete: () => {
-                // Persist the new active realm and restart the scene
+                // 5. Persist the new active realm and restart the scene
                 saveActiveRealm(realmId);
                 this.scene.restart();
             },
@@ -2259,7 +2278,7 @@ export default class GardenScene extends Phaser.Scene {
         }).setDepth(D.HUD);
 
         // Harmony badge
-        const hud = this.add.container(860, 72).setDepth(D.HUD);
+        const hud = this.add.container(860, 72).setDepth(3000);
         const badge = this.add.graphics();
         badge.fillStyle(0x241540, 0.92);
         badge.lineStyle(3, C.gold, 0.9);
@@ -2275,7 +2294,7 @@ export default class GardenScene extends Phaser.Scene {
         hud.add([badge, lotus, this.harmonyText, this.harmonyValue]);
 
         // Spirit Stones badge
-        const stoneHud = this.add.container(860, 162).setDepth(D.HUD);
+        const stoneHud = this.add.container(860, 162).setDepth(3000);
         const stoneBadge = this.add.graphics();
         stoneBadge.fillStyle(0x241540, 0.92);
         stoneBadge.lineStyle(3, 0xb26bff, 0.9);
@@ -2344,7 +2363,7 @@ export default class GardenScene extends Phaser.Scene {
          Back-ease bounce to 1.0x on pointerup) on the inner container.  */
     makeActionButton({ x, baseColor, innerColor, hoverStroke, iconKey, iconW, iconH, label, labelColor, labelStroke, phase = 0, onTap }) {
         // Outer: position + idle breathing. Inner: visuals + press feedback.
-        const outer = this.add.container(x, BTN_Y).setDepth(D.BAR);
+        const outer = this.add.container(x, BTN_Y).setDepth(3000);
         const inner = this.add.container(0, 0);
 
         const ring = this.add.graphics();

@@ -30,6 +30,32 @@ export const ECONOMY_DEFAULTS = {
         flower_rare_nguyet_cuc: 25,
     },
     /**
+     * Hoa Các (Garden Shop) — seed prices in Hòa Hợp (harmony) for gardeners
+     * who would rather pay in flowers' breath than in stones.
+     */
+    seedHarmonyPrices: {
+        flower_cyan_orchid: 2,
+        flower_emerald_bamboo: 2,
+        flower_purple_wisteria: 8,
+        flower_golden_amber: 16,
+        flower_rare_nguyet_cuc: 40,
+        flower_bang_lien: 12,
+        flower_tuyet_chi: 18,
+    },
+    /**
+     * Hoa Các — sell-back values when exchanging harvested flowers
+     * (Tiên Thiên Đổi Báu): harmony per bloom + bonus stones for rare tiers.
+     */
+    seedSellValues: {
+        flower_cyan_orchid: { harmony: 1, stones: 0 },
+        flower_emerald_bamboo: { harmony: 1, stones: 0 },
+        flower_purple_wisteria: { harmony: 3, stones: 1 },
+        flower_golden_amber: { harmony: 5, stones: 1 },
+        flower_rare_nguyet_cuc: { harmony: 12, stones: 2 },
+        flower_bang_lien: { harmony: 6, stones: 1 },
+        flower_tuyet_chi: { harmony: 9, stones: 2 },
+    },
+    /**
      * Quick-watering (fast-forward growth) is a premium action: it costs
      * Đá Linh Khí. Small batches cost `quickWaterCost`, a big batch (more
      * than `quickWaterBigBatch` plots) costs `quickWaterCostBig`. Rain, the
@@ -199,6 +225,92 @@ export class EconomySystem {
     }
 
     /**
+     * Spend Hòa Hợp (harmony). Refuses when the balance is short, mirroring
+     * spendDiamonds() so the shop can show a notice instead of going negative.
+     * @returns {{ success: boolean, cost: number, have: number, message: string }}
+     */
+    spendHarmony(cost, reason = 'spend') {
+        const n = Math.max(0, cost | 0);
+        if (!n) return { success: true, cost: 0, have: this.harmony, message: '' };
+        if (this.harmony < n) {
+            const result = {
+                success: false,
+                cost: n,
+                have: this.harmony,
+                message: `Không đủ Hòa Hợp! Cần ${n} ✿, hiện có ${this.harmony} ✿.`,
+            };
+            this.bus?.emit?.('economy:harmony-insufficient', { ...result, reason });
+            return result;
+        }
+        this.harmony -= n;
+        this.bus?.emit?.('economy:currency-changed', { source: reason, harmony: this.harmony, spiritStones: this.spiritStones });
+        return { success: true, cost: n, have: this.harmony, message: `-${n} ✿ Hòa Hợp` };
+    }
+
+    /** Hoa Các price of a seed in Hòa Hợp (explicit table, sensible fallback). */
+    getSeedHarmonyPrice(seedId) {
+        const table = this.config.seedHarmonyPrices ?? {};
+        if (table[seedId] != null) return table[seedId];
+        return Math.max(2, Math.ceil((this.config.seedCosts?.[seedId] ?? 0) * 2));
+    }
+
+    /** Hoa Các sell-back value of one bloom of a seed. */
+    getSeedSellValue(seedId) {
+        const table = this.config.seedSellValues ?? {};
+        if (table[seedId]) return { ...table[seedId] };
+        const stones = this.config.harvestYield?.[SEED_RARITY[seedId] || 'common'] ?? 1;
+        return { harmony: Math.max(1, Math.floor(stones / 2) + 1), stones: Math.floor(stones / 2) };
+    }
+
+    /**
+     * Buy one packet of a seed paying Hòa Hợp instead of Đá Linh Khí
+     * (Hoa Các · Kỳ Hoa Dị Thảo tab). Inventory + bus contract match
+     * purchaseSeed().
+     * @returns {{ success: boolean, cost: number, owned?: number, message: string }}
+     */
+    purchaseSeedWithHarmony(seedId) {
+        const cost = this.getSeedHarmonyPrice(seedId);
+        const pay = this.spendHarmony(cost, 'shop:seed-harmony');
+        if (!pay.success) {
+            return { success: false, cost, have: pay.have, message: pay.message };
+        }
+        this.inventory[seedId] = (this.inventory[seedId] || 0) + 1;
+        this.bus?.emit?.('economy:seed-purchased', { seedId, cost, owned: this.inventory[seedId], currency: 'harmony' });
+        return { success: true, cost, owned: this.inventory[seedId], currency: 'harmony', message: `Mua thành công! (-${cost} ✿ Hòa Hợp)` };
+    }
+
+    /**
+     * Sell harvested flowers back to the shop (Tiên Thiên Đổi Báu):
+     * inventory out, Hòa Hợp + Đá Linh Khí in. Stones flow through
+     * addDiamonds() so DIAMONDS_CHANGED fires and the HUD re-syncs itself.
+     * @param {string} seedId
+     * @param {number} [qty] how many blooms to sell (default 1, 'all' allowed via Infinity)
+     * @returns {{ success: boolean, sold: number, harmony: number, spiritStones: number, message: string }}
+     */
+    sellFlower(seedId, qty = 1) {
+        const value = this.getSeedSellValue(seedId);
+        const owned = this.inventory[seedId] || 0;
+        const n = Math.min(owned, Math.max(1, Math.floor(qty)));
+        if (n <= 0) {
+            return {
+                success: false,
+                sold: 0,
+                harmony: 0,
+                spiritStones: 0,
+                message: `Chưa có ${seedId} trong kho hoa để đổi.`,
+            };
+        }
+        this.inventory[seedId] -= n;
+        const harmony = value.harmony * n;
+        const stones = value.stones * n;
+        this.harmony += harmony;
+        if (stones > 0) this.addDiamonds(stones, 'shop:sell');
+        this.bus?.emit?.('economy:currency-changed', { source: 'shop:sell', harmony: this.harmony, spiritStones: this.spiritStones });
+        this.bus?.emit?.('economy:flowers-sold', { seedId, sold: n, harmony, spiritStones: stones });
+        return { success: true, sold: n, harmony, spiritStones: stones, message: `Đổi ${n} hoa +${harmony} ✿ +${stones} 💎` };
+    }
+
+    /**
      * Cost (in diamonds) of an instant quick-water for `plotCount` plots:
      * 1 💎 for a small batch, 2 💎 for a big one. Never free.
      */
@@ -298,6 +410,17 @@ export class EconomySystem {
     /** Record a plot reset (after harvest) */
     recordPlotReset() {
         // currentBlooms already decremented in harvestFlower
+    }
+
+    /**
+     * Credit one seed packet after an external pay step (Hoa Các realm-seed
+     * purchases price off the harmony table, which purchaseSeed() — keyed to
+     * seedCosts — does not know about). Announces like every other purchase.
+     */
+    grantSeed(seedId) {
+        this.inventory[seedId] = (this.inventory[seedId] || 0) + 1;
+        this.bus?.emit?.('economy:seed-purchased', { seedId, cost: 0, owned: this.inventory[seedId], currency: 'shop' });
+        return this.inventory[seedId];
     }
 
     /**

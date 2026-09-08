@@ -9,6 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "assets:process": "node scripts/process-assets.mjs",
+    "assets:frost": "node scripts/key-frost-assets.mjs",
     "test": "node --test tests/*.test.js && node scripts/test-logic.mjs && node scripts/verify-asset-standards.mjs && node scripts/runtime-test.mjs",
     "test:logic": "node scripts/test-logic.mjs",
     "test:runtime": "node scripts/runtime-test.mjs",

@@ -844,6 +844,14 @@ export function ensureFallbackTextures(scene) {
     if (!scene.textures.exists('npc_tien_nu_portrait')) {
         drawNpcTienNuPortraitFallback(scene);
     }
+    if (!scene.textures.exists('npc_frost_fairy')) {
+        console.warn('[TextureFactory] npc_frost_fairy missing — using procedural fallback');
+        drawNpcFrostFairyFallback(scene);
+    }
+    if (!scene.textures.exists('icon_shop')) {
+        console.warn('[TextureFactory] icon_shop missing — using procedural fallback');
+        drawShopIconFallback(scene);
+    }
     if (!scene.textures.exists('icon_sickle')) {
         drawSickleIconFallback(scene);
     }
@@ -1070,6 +1078,141 @@ function drawNpcTienNuFallback(scene) {
         ctx.beginPath();
         ctx.arc(cx + 16, h * 0.09, 3, 0, Math.PI * 2);
         ctx.fill();
+    });
+}
+
+/**
+ * NPC: Băng Băng Tiên Tử — frost keeper of Băng Phong Hàn Cốc
+ * (Frost Realm guardian). Icy-blue sister sprite of Tiên Nữ Hoa Giang,
+ * drawn only when public/assets/npc/npc_frost_fairy.png failed to load.
+ */
+function drawNpcFrostFairyFallback(scene) {
+    canvasTex(scene, 'npc_frost_fairy', 256, 384, (ctx, w, h) => {
+        const cx = w / 2;
+        // ethereal frost glow
+        const glow = ctx.createRadialGradient(cx, h * 0.4, 10, cx, h * 0.4, 160);
+        glow.addColorStop(0, 'rgba(210,240,255,0.55)');
+        glow.addColorStop(0.5, 'rgba(160,220,255,0.2)');
+        glow.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = glow;
+        ctx.fillRect(0, 0, w, h);
+        // flowing frost robe
+        const robeGrad = ctx.createLinearGradient(cx, h * 0.2, cx, h * 0.9);
+        robeGrad.addColorStop(0, '#eaf7ff');
+        robeGrad.addColorStop(0.4, '#bfe4f8');
+        robeGrad.addColorStop(1, '#5f9cc4');
+        ctx.fillStyle = robeGrad;
+        ctx.beginPath();
+        ctx.moveTo(cx, h * 0.2);
+        ctx.bezierCurveTo(cx - 30, h * 0.3, cx - 50, h * 0.6, cx - 60, h * 0.88);
+        ctx.quadraticCurveTo(cx, h * 0.92, cx + 60, h * 0.88);
+        ctx.bezierCurveTo(cx + 50, h * 0.6, cx + 30, h * 0.3, cx, h * 0.2);
+        ctx.fill();
+        // head
+        const headGrad = ctx.createRadialGradient(cx, h * 0.15, 4, cx, h * 0.15, 28);
+        headGrad.addColorStop(0, '#f4f0ea');
+        headGrad.addColorStop(1, '#c2c8d4');
+        ctx.fillStyle = headGrad;
+        ctx.beginPath();
+        ctx.arc(cx, h * 0.15, 24, 0, Math.PI * 2);
+        ctx.fill();
+        // frosted silver hair
+        ctx.fillStyle = '#dfe9f2';
+        ctx.beginPath();
+        ctx.moveTo(cx - 20, h * 0.1);
+        ctx.quadraticCurveTo(cx - 35, h * 0.2, cx - 40, h * 0.45);
+        ctx.quadraticCurveTo(cx - 20, h * 0.3, cx, h * 0.1);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(cx + 20, h * 0.1);
+        ctx.quadraticCurveTo(cx + 35, h * 0.2, cx + 40, h * 0.45);
+        ctx.quadraticCurveTo(cx + 20, h * 0.3, cx, h * 0.1);
+        ctx.fill();
+        // icy jade hairpins
+        ctx.strokeStyle = '#7dffe4';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(cx - 22, h * 0.09);
+        ctx.lineTo(cx - 40, h * 0.05);
+        ctx.moveTo(cx + 22, h * 0.09);
+        ctx.lineTo(cx + 40, h * 0.05);
+        ctx.stroke();
+        // ice lotus lantern
+        ctx.fillStyle = 'rgba(190,240,255,0.95)';
+        for (let i = 0; i < 6; i++) {
+            const a = (i / 6) * Math.PI * 2;
+            ctx.beginPath();
+            ctx.ellipse(cx + 46 + Math.cos(a) * 9, h * 0.36 + Math.sin(a) * 9, 6, 4, a, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        const lanternGlow = ctx.createRadialGradient(cx + 46, h * 0.36, 2, cx + 46, h * 0.36, 26);
+        lanternGlow.addColorStop(0, 'rgba(210,250,255,0.9)');
+        lanternGlow.addColorStop(1, 'rgba(210,250,255,0)');
+        ctx.fillStyle = lanternGlow;
+        ctx.fillRect(cx + 18, h * 0.36 - 26, 56, 52);
+        // frost motes
+        ctx.fillStyle = 'rgba(255,255,255,0.85)';
+        for (const [dx, dy] of [[-34, 0.32], [30, 0.5], [-26, 0.62], [38, 0.28]]) {
+            ctx.beginPath();
+            ctx.arc(cx + dx, h * dy, 2.2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    });
+}
+
+/**
+ * Hoa Các shop icon — a golden pagoda treasury glyph used on the HUD button
+ * when public/assets/ui/icon_shop.png failed to load.
+ */
+function drawShopIconFallback(scene) {
+    canvasTex(scene, 'icon_shop', 192, 192, (ctx, w, h) => {
+        const cx = w / 2;
+        const roofTier = (y, half) => {
+            ctx.beginPath();
+            ctx.moveTo(cx - half, y);
+            ctx.quadraticCurveTo(cx - half * 0.55, y - 16, cx - half * 0.3, y - 26);
+            ctx.lineTo(cx + half * 0.3, y - 26);
+            ctx.quadraticCurveTo(cx + half * 0.55, y - 16, cx + half, y);
+            ctx.quadraticCurveTo(cx, y + 10, cx - half, y);
+            ctx.closePath();
+            const g = ctx.createLinearGradient(cx - half, y - 26, cx + half, y);
+            g.addColorStop(0, '#8a5a26');
+            g.addColorStop(0.5, '#dfb15b');
+            g.addColorStop(1, '#8a5a26');
+            ctx.fillStyle = g;
+            ctx.fill();
+            ctx.strokeStyle = '#ffe3a0';
+            ctx.lineWidth = 2.5;
+            ctx.stroke();
+        };
+        // spire
+        ctx.strokeStyle = '#ffe3a0';
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(cx, 30);
+        ctx.lineTo(cx, 48);
+        ctx.stroke();
+        ctx.fillStyle = '#ffe9a8';
+        ctx.beginPath();
+        ctx.arc(cx, 28, 5, 0, Math.PI * 2);
+        ctx.fill();
+        roofTier(74, 40);
+        roofTier(112, 58);
+        roofTier(150, 76);
+        // body + door glow
+        const bodyGlow = ctx.createRadialGradient(cx, 152, 4, cx, 152, 44);
+        bodyGlow.addColorStop(0, 'rgba(255,214,140,0.95)');
+        bodyGlow.addColorStop(1, 'rgba(122,58,16,0.4)');
+        ctx.fillStyle = bodyGlow;
+        ctx.fillRect(cx - 34, 138, 68, 34);
+        ctx.fillStyle = '#3a2410';
+        ctx.fillRect(cx - 34, 168, 68, 6);
+        // warm halo
+        const halo = ctx.createRadialGradient(cx, 108, 30, cx, 108, 92);
+        halo.addColorStop(0, 'rgba(255,200,110,0.28)');
+        halo.addColorStop(1, 'rgba(255,200,110,0)');
+        ctx.fillStyle = halo;
+        ctx.fillRect(0, 0, w, h);
     });
 }
 

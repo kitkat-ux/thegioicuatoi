@@ -34,6 +34,15 @@ export const REALMS = {
         unlockCost: 0,
         icon: '✿',
         tint: 0x8f7ae0,
+        /* Realm guardian NPC — the sprite/label swap when switching realms.
+           textureKey '' = the default garden fairy (npc_tien_nu). */
+        npc: {
+            name: 'Tiên Nữ Hoa Giang',
+            spriteKey: 'npc_tien_nu',
+            spritePath: './assets/images/npc_tien_nu.png',
+            title: 'Người trấn giữ cầu kiều · Linh Đảo Phù Vân',
+            auraTint: 0xc9b2ff,
+        },
     },
     FROST_REALM: {
         id: 'FROST_REALM',
@@ -50,6 +59,14 @@ export const REALMS = {
         unlockCost: 0,
         icon: '❄',
         tint: 0x7ff7ff,
+        /* Băng Băng Tiên Tử — the frost keeper of Hàn Cốc (npc_frost_fairy). */
+        npc: {
+            name: 'Băng Băng Tiên Tử',
+            spriteKey: 'npc_frost_fairy',
+            spritePath: './assets/npc/npc_frost_fairy.png',
+            title: 'Người canh giữ Băng Phong Hàn Cốc',
+            auraTint: 0x9fd8ff,
+        },
     },
 };
 

@@ -233,8 +233,61 @@ for (const f of plantFiles) {
         `alpha: ${(transparent * 100 / total).toFixed(0)}% transparent`);
 }
 
+/* ------------------------- Realm NPC + shop UI icons -------------------------
+   public/assets/npc/ (Băng Băng Tiên Tử + future realm guardians) and
+   public/assets/ui/ (Hoa Các pagoda + future shop chrome) are keyed sprites
+   cut from studio-black plates: 4-channel true alpha, transparent corners,
+   NPC sprites ≤ 720px, UI icons ≤ 192px. */
+const npcDir = 'public/assets/npc';
+const npcFiles = fs.existsSync(npcDir) ? fs.readdirSync(npcDir).filter((f) => f.endsWith('.png')).sort() : [];
+for (const f of npcFiles) {
+    const p = path.join(npcDir, f);
+    const { data, info } = await sharp(p).raw().toBuffer({ resolveWithObject: true });
+    const meta = await sharp(p).metadata();
+    const total = info.width * info.height;
+    let transparent = 0;
+    let semi = 0;
+    for (let i = 0; i < total; i++) {
+        const alpha = info.channels === 4 ? data[i * info.channels + 3] : 255;
+        if (alpha === 0) transparent++;
+        else if (alpha < 255) semi++;
+    }
+    const cornersTransparent = info.channels === 4 && [[2, 2], [info.width - 3, 2], [2, info.height - 3], [info.width - 3, info.height - 3]]
+        .every(([x, y]) => data[(y * info.width + x) * info.channels + 3] === 0);
+    const maxEdge = Math.max(info.width, info.height);
+    const ok = meta.format === 'png' && meta.depth === 'uchar' && info.channels === 4 &&
+        transparent + semi > total * 0.02 && cornersTransparent && maxEdge <= 720;
+    check(`realm npc sprite: ${f}`, ok,
+        `${info.width}x${info.height} ch=${info.channels} depth=${meta.depth} ` +
+        `alpha: ${(transparent * 100 / total).toFixed(0)}% transparent`);
+}
+
+const uiDir = 'public/assets/ui';
+const uiFiles = fs.existsSync(uiDir) ? fs.readdirSync(uiDir).filter((f) => f.endsWith('.png')).sort() : [];
+for (const f of uiFiles) {
+    const p = path.join(uiDir, f);
+    const { data, info } = await sharp(p).raw().toBuffer({ resolveWithObject: true });
+    const meta = await sharp(p).metadata();
+    const total = info.width * info.height;
+    let transparent = 0;
+    let semi = 0;
+    for (let i = 0; i < total; i++) {
+        const alpha = info.channels === 4 ? data[i * 4 + 3] : 255;
+        if (alpha === 0) transparent++;
+        else if (alpha < 255) semi++;
+    }
+    const cornersTransparent = info.channels === 4 && [[2, 2], [info.width - 3, 2], [2, info.height - 3], [info.width - 3, info.height - 3]]
+        .every(([x, y]) => data[(y * info.width + x) * info.channels + 3] === 0);
+    const maxEdge = Math.max(info.width, info.height);
+    const ok = meta.format === 'png' && meta.depth === 'uchar' && info.channels === 4 &&
+        transparent + semi > total * 0.02 && cornersTransparent && maxEdge <= 192;
+    check(`shop ui icon: ${f}`, ok,
+        `${info.width}x${info.height} ch=${info.channels} depth=${meta.depth} ` +
+        `alpha: ${(transparent * 100 / total).toFixed(0)}% transparent`);
+}
+
 console.log(fails === 0
-    ? `\nASSET STANDARDS OK — ${files.length} garden files + ${fishingFiles.length} fishing files + ${tileFiles.length} soil tiles + ${realmFiles.length} realm assets + ${plantFiles.length} plant sprites are clean 32-bit RGBA with true alpha, no faux checkerboard, no key residue` +
+    ? `\nASSET STANDARDS OK — ${files.length} garden files + ${fishingFiles.length} fishing files + ${tileFiles.length} soil tiles + ${realmFiles.length} realm assets + ${plantFiles.length} plant sprites + ${npcFiles.length} realm NPCs + ${uiFiles.length} shop UI icons are clean 32-bit RGBA with true alpha, no faux checkerboard, no key residue` +
       (warnings ? ` (${warnings} warning(s))` : '')
     : `\n${fails} ASSET(S) VIOLATE 07_VISUAL_ASSET_CATALOG.md`);
 process.exit(fails ? 1 : 0);

@@ -33,7 +33,21 @@ export const LAYERS = {
     CODEX: 1550,
     FISHING: 1575, // fishing pier modal and its presentation-only mock motion
     BEAST: 1580, // spirit beast sanctuary modal (Vườn Linh Thú)
-    TOAST: 1600,
+
+    /* ---- MODAL DEPTH CONTRACT (HUD punch-through fix) ----
+       Game HUD entry buttons (Hoa Các, Bí Cảnh, Linh Thú, Luyện Đan, Câu Cá)
+       sit at 2000 — above every world layer but far below every modal. The
+       three modal tiers then stack strictly above them:
+         9000  full-screen dark blocker backdrops (interactive — a click can
+               never fall through to the HUD buttons underneath)
+         9500  modal windows (panels and all their widgets)
+         9999  modal close buttons (always visible, always on top)
+       Nothing between 2000 and 9000 may own the stage while a modal is up. */
+    HUD_BUTTONS: 2000, // game HUD entry buttons — below every modal overlay
+    MODAL_BLOCKER: 9000, // modal dark blocker backdrops (interactive)
+    MODAL_WINDOW: 9500, // modal windows (panels + widgets)
+    MODAL_CLOSE: 9999, // modal close buttons
+    TOAST: 9600, // notices / celebration toasts — above modal windows, below close buttons
 };
 
 export default LAYERS;

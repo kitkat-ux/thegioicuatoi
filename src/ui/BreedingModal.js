@@ -8,6 +8,7 @@
 import Phaser from 'phaser';
 import { EVENTS } from '../systems/EventManager.js';
 import { DIALOG_FONT } from '../systems/DialogSystem.js';
+import { createModalBlocker, hideModalChrome, makeCloseLayer, showModalChrome } from './modalInput.js';
 
 const W = 920;
 const H = 1180;
@@ -26,15 +27,18 @@ export class BreedingModal {
 
     create() {
         const s = this.scene;
-        this.root = s.add.container(540, 960).setDepth(1000).setVisible(false);
-        const shade = s.add.rectangle(0, 0, 1080, 1920, 0x110a22, 0.76).setInteractive();
+        /* modal depth contract (HUD punch-through fix, see modalInput.js):
+           blocker 9000 · window 9500 (this root) · close 9999 */
+        this.root = s.add.container(540, 960).setDepth(9500).setVisible(false);
+        this.shade = createModalBlocker(s, { x: 540, y: 960, width: 1080, height: 1920, color: 0x110a22, alpha: 0.76 });
         const panel = s.add.graphics();
         panel.fillStyle(0xf4e5c2, 1).fillRoundedRect(-W / 2, -H / 2, W, H, 26);
         panel.lineStyle(8, GOLD, 1).strokeRoundedRect(-W / 2, -H / 2, W, H, 26);
         panel.lineStyle(2, 0x8a5fa8, 0.8).strokeRoundedRect(-W / 2 + 18, -H / 2 + 18, W - 36, H - 36, 18);
         this.title = s.add.text(0, -H / 2 + 58, 'Linh Hoa Dị Biến', { fontFamily: DIALOG_FONT, fontSize: '42px', color: '#4b2864', fontStyle: 'bold' }).setOrigin(.5);
         this.subtitle = s.add.text(0, -H / 2 + 108, 'Ghép đôi hoa trưởng thành · 15% cơ hội đột biến', { fontFamily: DIALOG_FONT, fontSize: '22px', color: '#795b49' }).setOrigin(.5);
-        this.closeButton = s.add.text(W / 2 - 48, -H / 2 + 35, '×', { fontSize: '44px', color: '#5d356f' }).setOrigin(.5).setInteractive({ useHandCursor: true });
+        // close × — top-level at LAYERS.MODAL_CLOSE (9999), world-positioned
+        this.closeButton = makeCloseLayer(s, s.add.text(540 + W / 2 - 48, 960 - H / 2 + 35, '×', { fontSize: '44px', color: '#5d356f' }).setOrigin(.5).setInteractive({ useHandCursor: true }));
         this.closeButton.on('pointerdown', () => this.close());
         this.search = s.add.dom(0, -H / 2 + 165, 'input', { width: '530px', height: '48px', fontSize: '22px', padding: '8px 16px', border: '2px solid #b89158', borderRadius: '22px', background: '#fffaf0', color: '#33224a' }, '').setOrigin(.5);
         this.search.node.placeholder = 'Tìm hoa trưởng thành...';
@@ -46,7 +50,7 @@ export class BreedingModal {
         this.action = s.add.text(0, -H / 2 + 535, 'Thỉnh Linh Lai Tạo', { fontFamily: DIALOG_FONT, fontSize: '27px', color: '#fff7dd', backgroundColor: '#8a5fa8', padding: { left: 30, right: 30, top: 13, bottom: 13 } }).setOrigin(.5).setInteractive({ useHandCursor: true });
         this.action.on('pointerdown', () => this.attempt());
         this.hint = s.add.text(0, -H / 2 + 620, '', { fontFamily: DIALOG_FONT, fontSize: '20px', color: '#795b49', align: 'center' }).setOrigin(.5);
-        this.root.add([shade, panel, this.title, this.subtitle, this.closeButton, this.search, this.list, this.slotA, this.slotB, this.preview, this.action, this.hint]);
+        this.root.add([panel, this.title, this.subtitle, this.search, this.list, this.slotA, this.slotB, this.preview, this.action, this.hint]);
         this.disposers.push(this.bus?.on(EVENTS.BREEDING_SUCCESS, (data) => this.showSuccess(data), { owner: this }) ?? (() => {}));
         this.refreshList();
         return this;
@@ -102,10 +106,26 @@ export class BreedingModal {
         this.audio?.pluck?.(880, { gain: .12 });
     }
 
-    open() { this.opened = true; this.root.setVisible(true); this.refreshList(); return this; }
-    close() { this.opened = false; this.root?.setVisible(false); return this; }
+    open() {
+        this.opened = true;
+        showModalChrome(this.scene, { blocker: this.shade, window: this.root, close: this.closeButton }, { popScale: 0 });
+        this.refreshList();
+        return this;
+    }
+    close() {
+        this.opened = false;
+        hideModalChrome(this.scene, { blocker: this.shade, window: this.root, close: this.closeButton }, { popScale: 0 });
+        return this;
+    }
     isOpen() { return this.opened; }
-    destroy() { this.disposers.forEach((off) => off()); this.root?.destroy(true); this.opened = false; }
+    destroy() {
+        this.disposers.forEach((off) => off());
+        this.shade?.destroy();
+        this.closeButton?.destroy();
+        this.root?.destroy(true);
+        this.shade = this.closeButton = null;
+        this.opened = false;
+    }
 }
 
 export default BreedingModal;

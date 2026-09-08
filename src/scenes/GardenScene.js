@@ -32,6 +32,9 @@ import {
 } from '../data/RealmsData.js';
 import RealmModal from '../ui/RealmModal.js';
 import GardenShopModal from '../ui/GardenShopModal.js';
+import {
+    createModalBlocker, createPanelShield, hideModalChrome, makeCloseLayer, showModalChrome,
+} from '../ui/modalInput.js';
 
 const W = 1080;
 const H = 1920;
@@ -102,11 +105,13 @@ const NPC_SPRITE_DY = -78;
    and the ambient wash (1100) so she stays readable day and night, level
    with the seed drawer (1200). */
 const NPC_DEPTH = 1200;
-/* HUD chrome depth (hotfix): every always-visible HUD container — the top
-   currency badges, the side buttons (Bí Cảnh, Linh Thú, Câu Cá, Hoa Các)
-   and the bottom action bar — sits at 2500, safely above every world layer
-   and modal overlay, and below only the realm-switch fade (9999). */
-const HUD_DEPTH = 2500;
+/* HUD chrome depth (modal punch-through fix): every always-visible HUD
+   container — the top currency badges, the game entry buttons (Hoa Các,
+   Bí Cảnh, Linh Thú, Luyện Đan, Câu Cá) and the bottom action bar — sits
+   at 2000, safely above every world layer but strictly BELOW every modal
+   tier (blocker 9000 / window 9500 / close 9999), so a HUD button can
+   never render over, or steal a tap from, an open modal. */
+const HUD_DEPTH = LAYERS.HUD_BUTTONS;
 
 /* Khung Thoại (dialog) layout — three distinct vertical sections.
    Panel spans (60,400)-(1020,1080):
@@ -314,9 +319,14 @@ export default class GardenScene extends Phaser.Scene {
             if (!SEED_BY_ID[id]) SEED_BY_ID[id] = seed;
         }
 
-        // Background covers 1080x1920 — uses the active realm's background
-        // (DEFAULT_GARDEN uses bg_manor_isometric; FROST_REALM uses bg_frost_realm).
-        this.add.image(W / 2, H / 2, this.activeRealm.backgroundKey).setDisplaySize(W, H).setDepth(D.BG);
+        // Background covers the whole 1080x1920 stage — uses the active
+        // realm's background (DEFAULT_GARDEN uses bg_manor_isometric;
+        // FROST_REALM uses bg_frost_realm, …). The realm plates are 100%
+        // solid opaque edge-to-edge artwork, so stretching them to the exact
+        // game size guarantees complete screen coverage with zero letterbox
+        // gaps, zero canvas borders and zero transparent (checkerboard) areas.
+        this.bg = this.add.image(W / 2, H / 2, this.activeRealm.backgroundKey).setOrigin(0.5, 0.5).setDepth(D.BG);
+        this.bg.setDisplaySize(this.scale.width, this.scale.height);
 
         this.audio = new AudioManager(this);
         this.input.once('pointerdown', () => {
@@ -565,6 +575,15 @@ export default class GardenScene extends Phaser.Scene {
             this._overlayChrome = blocked;
             if (this.hintBg) this.hintBg.setVisible(!blocked);
             if (this.hintText) this.hintText.setVisible(!blocked);
+        }
+        // HUD punch-through guard: while any modal is up, its 9000-depth
+        // blocker already swallows every tap; the game HUD entry buttons
+        // (Hoa Các, Bí Cảnh, Linh Thú, Luyện Đan, Câu Cá, Đồ Giám) go fully
+        // non-interactive on top of that, the instant the modal opens.
+        const modalUp = this.modalOverlayOpen();
+        if (modalUp !== this._hudBlocked) {
+            this._hudBlocked = modalUp;
+            this.setHudButtonsInteractive(!modalUp);
         }
         if (!this.weather) return;
         const changes = this.weather.tick(delta);
@@ -1085,11 +1104,16 @@ export default class GardenScene extends Phaser.Scene {
                   (drag or wheel) so text NEVER overflows into the footer
        - FOOTER : response buttons pinned strictly at the panel bottom           */
     createDialogBox() {
-        this.dialogBox = this.add.container(0, 0).setDepth(D.DIALOG).setVisible(false);
+        /* Modal depth contract (HUD punch-through fix, see ui/modalInput.js):
+           blocker 9000 (dialogDim) · window 9500 (dialogBox) · close 9999 (✕) */
+        this.dialogBox = this.add.container(0, 0).setDepth(D.MODAL_WINDOW).setVisible(false);
 
-        // Dimmed backdrop
-        const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x05030c, 0.55).setInteractive();
-        dim.on('pointerdown', () => this.closeDialog());
+        // Blocker: full-screen interactive dark veil at 9000 — while the
+        // khung thoại is up no tap can fall through to the HUD buttons (2000).
+        this.dialogDim = createModalBlocker(this, {
+            x: W / 2, y: H / 2, width: W, height: H, color: 0x05030c, alpha: 0.55,
+        });
+        this.dialogDim.on('pointerdown', () => this.closeDialog());
 
         /* ---- panel ---- */
         const panel = this.add.graphics();
@@ -1115,10 +1139,11 @@ export default class GardenScene extends Phaser.Scene {
             fontFamily: DIALOG_FONT, fontSize: '20px', color: '#b9a3dd',
             stroke: '#1b1140', strokeThickness: 4,
         });
-        const closeBtn = this.add.text(964, 438, '✕', {
+        const closeBtn = makeCloseLayer(this, this.add.text(964, 438, '✕', {
             fontFamily: DIALOG_FONT, fontSize: '34px', color: '#ffb0b0',
-        }).setOrigin(0.5).setInteractive();
+        }).setOrigin(0.5).setInteractive());
         closeBtn.on('pointerdown', () => this.closeDialog());
+        this.dialogCloseBtn = closeBtn;
         const divider = this.add.graphics();
         divider.lineStyle(2, C.gold, 0.55);
         divider.lineBetween(96, 572, 984, 572);
@@ -1179,9 +1204,12 @@ export default class GardenScene extends Phaser.Scene {
             this.dialogChoices.push(descriptor);
         }
 
+        // Panel shield: taps inside the khung thoại stop here — they can never
+        // reach the blocker underneath and slam the dialog shut (mobile fix).
+        const shield = createPanelShield(this, W / 2, DLG.y + DLG.h / 2, DLG.w, DLG.h);
         this.dialogBox.add([
-            dim, panel, portraitFrame, this.dialogPortrait, this.dialogName, this.dialogRole,
-            closeBtn, divider, this.dialogContent, this.dialogFade, this.dialogScrollHint, bodyZone,
+            panel, shield, portraitFrame, this.dialogPortrait, this.dialogName, this.dialogRole,
+            divider, this.dialogContent, this.dialogFade, this.dialogScrollHint, bodyZone,
         ]);
         this.dialogChoices.forEach((c) => this.dialogBox.add(c.container));
     }
@@ -1263,8 +1291,8 @@ export default class GardenScene extends Phaser.Scene {
             const node = this.dialog.startDialogue();
             if (!node) return;
             this.dialogVisible = true;
-            this.dialogBox.setVisible(true).setAlpha(0);
-            this.tweens.add({ targets: this.dialogBox, alpha: 1, duration: 200 });
+            showModalChrome(this, { blocker: this.dialogDim, window: this.dialogBox, close: this.dialogCloseBtn },
+                { duration: 200, popScale: 0 });
             this.renderDialogNode(node);
         } catch (e) { console.warn(e); }
     }
@@ -1272,10 +1300,8 @@ export default class GardenScene extends Phaser.Scene {
     closeDialog() {
         this.dialogVisible = false;
         this.dialogDragging = null;
-        this.tweens.add({
-            targets: this.dialogBox, alpha: 0, duration: 180,
-            onComplete: () => this.dialogBox.setVisible(false),
-        });
+        hideModalChrome(this, { blocker: this.dialogDim, window: this.dialogBox, close: this.dialogCloseBtn },
+            { duration: 180, popScale: 0 });
     }
 
     renderDialogNode(node) {
@@ -1507,7 +1533,7 @@ export default class GardenScene extends Phaser.Scene {
     /** Soil pick card — one row per unlockable soil, priced in 💎. */
     showSoilUpgradeModal(tile, options) {
         this.hideSoilModal();
-        const card = this.add.container(W / 2, 900).setDepth(D.MODAL + 2).setAlpha(0).setScale(0.9);
+        const card = this.add.container(W / 2, 900).setDepth(D.MODAL_WINDOW).setAlpha(0).setScale(0.9);
         const rowH = 118;
         const h = 150 + options.length * rowH;
         const g = this.add.graphics();
@@ -1603,6 +1629,40 @@ export default class GardenScene extends Phaser.Scene {
     /** True when a full-screen overlay (drawer / dialog / codex / alchemy / fishing / beast / realm / shop / ad) is up. */
     uiBlocked() {
         return !!(this.drawerOpen || this.dialogVisible || this.adWatching || this.soilModalOpen || this.codexModal?.isOpen() || this.fishingModal?.isOpen() || this.alchemyModal?.isOpen() || this.beastModal?.isOpen() || this.realmModal?.isOpen() || this.shopModal?.isOpen());
+    }
+
+    /** True while a full-screen MODAL overlay is up (seed drawer excluded). */
+    modalOverlayOpen() {
+        return !!(this.dialogVisible || this.adWatching || this.soilModalOpen || this.modal?.visible
+            || this.codexModal?.isOpen() || this.fishingModal?.isOpen() || this.alchemyModal?.isOpen()
+            || this.beastModal?.isOpen() || this.realmModal?.isOpen() || this.shopModal?.isOpen());
+    }
+
+    /** Recursively collect every interactive zone inside a HUD button. */
+    collectHudZones(obj, out = []) {
+        if (!obj) return out;
+        if (obj.input) out.push(obj);
+        for (const child of obj.list ?? []) this.collectHudZones(child, out);
+        return out;
+    }
+
+    /**
+     * Toggle input on the game HUD entry buttons (Hoa Các, Bí Cảnh, Linh Thú,
+     * Luyện Đan, Câu Cá, Đồ Giám). Called the instant a modal opens or closes
+     * so a HUD button can never be pressed through a modal overlay — together
+     * with the 9000-depth blockers this makes punch-through impossible.
+     */
+    setHudButtonsInteractive(enabled) {
+        const buttons = [
+            this.shopButton, this.realmButton, this.beastButton, this.fishingButton,
+            this.codexModal?.button, this.alchemyModal?.button,
+        ].filter(Boolean);
+        for (const button of buttons) {
+            for (const zone of this.collectHudZones(button)) {
+                if (enabled) zone.setInteractive();
+                else zone.disableInteractive();
+            }
+        }
     }
 
     /** Open the presentation-only fishing pier UI. */
@@ -2671,8 +2731,12 @@ export default class GardenScene extends Phaser.Scene {
 
     /* ============================ REWARDED MODAL ============================ */
     createModal() {
-        this.modal = this.add.container(0, 0).setDepth(D.MODAL).setVisible(false);
-        const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x05030c, 0.78).setInteractive();
+        /* Modal depth contract (HUD punch-through fix, see ui/modalInput.js):
+           blocker 9000 (modalDim) · window 9500 (this.modal) · close 9999 (✕) */
+        this.modal = this.add.container(0, 0).setDepth(D.MODAL_WINDOW).setVisible(false);
+        const dim = this.modalDim = createModalBlocker(this, {
+            x: W / 2, y: H / 2, width: W, height: H, color: 0x05030c, alpha: 0.78,
+        });
         const panel = this.add.graphics();
         panel.fillStyle(C.panelDeep, 0.98);
         panel.lineStyle(4, C.gold, 1);
@@ -2699,10 +2763,11 @@ export default class GardenScene extends Phaser.Scene {
         goldBtn.zone.on('pointerdown', (p, lx, ly, e) => { e?.stopPropagation?.(); this.watchAd(); });
         grayBtn.zone.on('pointerdown', (p, lx, ly, e) => { e?.stopPropagation?.(); this.quickWater(); });
         this.quickWaterBtn = grayBtn;
-        const closeX = this.add.text(W / 2 + 380, 600, '✕', {
+        const closeX = makeCloseLayer(this, this.add.text(W / 2 + 380, 600, '✕', {
             fontFamily: 'Arial', fontSize: '42px', color: '#ffb0b0',
-        }).setOrigin(0.5).setInteractive();
+        }).setOrigin(0.5).setInteractive());
         closeX.on('pointerdown', (p, lx, ly, e) => { e?.stopPropagation?.(); this.closeModal(false); });
+        this.modalCloseBtn = closeX;
         // panel shield: taps inside the card never reach the dim
         const shield = this.add.zone(W / 2, 870, 820, 620).setInteractive();
         shield.on('pointerdown', (p, lx, ly, e) => e?.stopPropagation?.());
@@ -2713,7 +2778,7 @@ export default class GardenScene extends Phaser.Scene {
             stroke: '#0a2830', strokeThickness: 8,
         }).setOrigin(0.5);
 
-        this.modal.add([dim, panel, shield, title, desc, vip, grayBtn.container, goldBtn.container, closeX, this.adTimerText]);
+        this.modal.add([panel, shield, title, desc, vip, grayBtn.container, goldBtn.container, this.adTimerText]);
     }
 
     /** Plots a watering pass would actually grow (planted, not yet blooming). */
@@ -2842,8 +2907,8 @@ export default class GardenScene extends Phaser.Scene {
         const affordable = this.economy.canAfford(cost);
         this.quickWaterBtn?.label?.setText(`Tưới Ngay · ${cost} 💎${affordable ? '' : '  (thiếu Đá Linh Khí)'}`)
             .setColor(affordable ? '#e6d8ff' : '#ffb0b0');
-        this.modal.setVisible(true).setAlpha(0);
-        this.tweens.add({ targets: this.modal, alpha: 1, duration: 200 });
+        showModalChrome(this, { blocker: this.modalDim, window: this.modal, close: this.modalCloseBtn },
+            { duration: 200, popScale: 0 });
     }
 
     /**
@@ -2851,10 +2916,8 @@ export default class GardenScene extends Phaser.Scene {
      *   reward path (ad / elixir) — the paid tap goes through quickWater().
      */
     closeModal(waterNow) {
-        this.tweens.add({
-            targets: this.modal, alpha: 0, duration: 180,
-            onComplete: () => this.modal.setVisible(false),
-        });
+        hideModalChrome(this, { blocker: this.modalDim, window: this.modal, close: this.modalCloseBtn },
+            { duration: 180, popScale: 0 });
         if (waterNow) this.waterAll('rewarded-ad');
     }
 

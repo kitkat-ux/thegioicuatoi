@@ -24,7 +24,10 @@ import { EVENTS } from '../systems/EventManager.js';
 import { HERBS, ELIXIRS, ALCHEMY_RECIPES } from '../systems/AlchemyManager.js';
 import { ALCHEMY_ASSETS } from '../data/AlchemyAssetManifest.js';
 import { DIALOG_FONT } from '../systems/DialogSystem.js';
-import { bindBackdropClose, createPanelShield, guarded, localRectToWorld } from './modalInput.js';
+import {
+    bindBackdropClose, createModalBlocker, createPanelShield, guarded,
+    hideModalChrome, localRectToWorld, makeCloseLayer, showModalChrome,
+} from './modalInput.js';
 
 /** Recipe / inventory slot art: Tụ Khí Đan → Trúc Cơ Đan, Tẩy Tủy Đan → Cửu Chuyển Thần Đan. */
 const PILL_BY_ELIXIR = {
@@ -205,7 +208,7 @@ export class AlchemyModal {
         const cy = 462;
         const R = 48;
 
-        this.button = scene.add.container(cx, cy).setDepth(LAYERS.HUD);
+        this.button = scene.add.container(cx, cy).setDepth(LAYERS.HUD_BUTTONS);
         const inner = scene.add.container(0, 0);
 
         const aura = scene.add.image(0, 0, 'glow').setTint(0xffb45e).setAlpha(0.18).setScale(1.4);
@@ -336,16 +339,19 @@ export class AlchemyModal {
     /* ================================ OVERLAY ================================ */
     createOverlay() {
         const { scene } = this;
+        /* modal depth contract (HUD punch-through fix, see modalInput.js):
+           blocker 9000 · window 9500 (this root) · close 9999 */
         // root is stage-centred: every child below uses panel-relative coords
-        this.root = scene.add.container(W / 2, H / 2).setDepth(LAYERS.MODAL + 25).setVisible(false).setAlpha(0);
+        this.root = scene.add.container(W / 2, H / 2).setDepth(LAYERS.MODAL_WINDOW).setVisible(false).setAlpha(0);
 
-        // dim MUST be parented into the overlay container (codex regression rule).
-        // Tap-outside-to-close is guarded: a pointer inside the panel rect is
-        // swallowed, never treated as a backdrop tap (mobile auto-close fix).
-        const dim = scene.add.rectangle(0, 0, W, H, 0x05030c, 0.76).setInteractive();
-        bindBackdropClose(dim, () => this.getPanelWorldRect(), () => this.close());
-        this.dim = dim;
-        this.root.add(dim);
+        // Blocker: full-screen interactive dark veil at 9000 — taps can never
+        // fall through to the HUD buttons (2000) underneath. Tap-outside-to-
+        // close is guarded: a pointer inside the panel rect is swallowed,
+        // never treated as a backdrop tap (mobile auto-close fix).
+        this.dim = createModalBlocker(scene, {
+            x: W / 2, y: H / 2, width: W, height: H, color: 0x05030c, alpha: 0.76,
+        });
+        bindBackdropClose(this.dim, () => this.getPanelWorldRect(), () => this.close());
 
         /* ---- panel ---- */
         const panel = scene.add.graphics();
@@ -362,11 +368,11 @@ export class AlchemyModal {
         this.panelShield = createPanelShield(scene, 0, 0, PW, PH);
         this.root.add(this.panelShield);
 
-        this.closeButton = text(scene, PW / 2 - 46, -PH / 2 + 38, '×', {
+        // close × — top-level at LAYERS.MODAL_CLOSE (9999), world-positioned
+        this.closeButton = makeCloseLayer(scene, text(scene, W / 2 + PW / 2 - 46, H / 2 - PH / 2 + 38, '×', {
             fontSize: '46px', color: '#ffb0b0', fontStyle: 'bold',
-        }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+        }).setOrigin(0.5).setInteractive({ useHandCursor: true }));
         this.closeButton.on('pointerdown', guarded(() => this.close()));
-        this.root.add(this.closeButton);
 
         this.title = text(scene, 0, -PH / 2 + 52, 'LÒ LUYỆN ĐAN', {
             fontSize: '44px', color: '#ffe9a8', fontStyle: 'bold',
@@ -894,8 +900,8 @@ export class AlchemyModal {
         this.lastOutcome = null;
         this.hintMsg = null;
         this.buildContent();
-        this.root.setVisible(true).setAlpha(0).setScale(0.965);
-        scene.tweens.add({ targets: this.root, alpha: 1, scale: 1, duration: 260, ease: 'Back.easeOut' });
+        showModalChrome(scene, { blocker: this.dim, window: this.root, close: this.closeButton },
+            { duration: 260, popScale: 0.965 });
         return this;
     }
 
@@ -904,10 +910,8 @@ export class AlchemyModal {
         const { scene } = this;
         this.visible = false;
         this.audio?.click?.(0);
-        scene.tweens.add({
-            targets: this.root, alpha: 0, scale: 0.975, duration: 200, ease: 'Quad.easeIn',
-            onComplete: () => this.root.setVisible(false),
-        });
+        hideModalChrome(scene, { blocker: this.dim, window: this.root, close: this.closeButton },
+            { duration: 200, popScale: 0.975 });
         return this;
     }
 
@@ -941,7 +945,7 @@ export class AlchemyModal {
             ctaLabel: this.ctaLabel?.text ?? '',
             ctaMode: this.ctaMode,
             buttonPos: this.buttonPos,
-            buttonDepth: this.button?.depth ?? LAYERS.HUD,
+            buttonDepth: this.button?.depth ?? LAYERS.HUD_BUTTONS,
             progress: this.alchemy.getCraftProgress(),
             elixirCount: this.elixirChips.map((c) => ({ id: c.id, n: this.alchemy.getElixir(c.id) })),
         };
@@ -953,9 +957,14 @@ export class AlchemyModal {
         this._timer?.remove();
         this._timer = null;
         // the overlay + medallion are display-list children; tearing the root
-        // down also releases the cauldron, flame and content container
+        // down also releases the cauldron, flame and content container. The
+        // blocker (9000) and close button (9999) live on the display list
+        // themselves, so they are released explicitly.
+        this.dim?.destroy();
+        this.closeButton?.destroy();
         this.root?.destroy(true);
         this.button?.destroy(true);
+        this.dim = this.closeButton = null;
         this.visible = false;
     }
 }

@@ -22,6 +22,10 @@ import { EVENTS } from '../systems/EventManager.js';
 import { SEED_BY_ID } from '../data/seedCatalog.js';
 import { CODEX_UI } from '../data/codexLore.js';
 import { DIALOG_FONT } from '../systems/DialogSystem.js';
+import {
+    bindBackdropClose, createModalBlocker, hideModalChrome, localRectToWorld,
+    makeCloseLayer, showModalChrome,
+} from './modalInput.js';
 
 const W = 1080;
 const H = 1920;
@@ -115,7 +119,7 @@ export class CodexModal {
         const cy = 322;
         const R = 54;
 
-        this.button = scene.add.container(cx, cy).setDepth(LAYERS.HUD);
+        this.button = scene.add.container(cx, cy).setDepth(LAYERS.HUD_BUTTONS);
         const inner = scene.add.container(0, 0);
 
         const plate = scene.add.graphics();
@@ -218,15 +222,18 @@ export class CodexModal {
     /* ================================ OVERLAY ================================ */
     createOverlay() {
         const { scene } = this;
-        this.root = scene.add.container(0, 0).setDepth(LAYERS.CODEX).setVisible(false).setAlpha(0);
+        /* modal depth contract (HUD punch-through fix, see modalInput.js):
+           blocker 9000 · window 9500 (this root) · close 9999 */
+        this.root = scene.add.container(0, 0).setDepth(LAYERS.MODAL_WINDOW).setVisible(false).setAlpha(0);
 
-        const dim = scene.add.rectangle(W / 2, H / 2, W, H, 0x05030c, 0.74).setInteractive();
-        dim.on('pointerdown', () => this.close());
-        this.dim = dim;
-        // The dim MUST be parented into the overlay container: left on the
-        // display list it would veil (and swallow input on) the whole garden
-        // even while the scroll is closed. Added first so it sits under the frame.
-        this.root.add(dim);
+        // Blocker: full-screen interactive dark veil at 9000. It starts
+        // hidden and only owns the stage while the scroll is open, so the
+        // closed garden is never veiled. Taps outside the sheet close it;
+        // taps inside the sheet rect are swallowed (mobile auto-close fix).
+        this.dim = createModalBlocker(scene, {
+            x: W / 2, y: H / 2, width: W, height: H, color: 0x05030c, alpha: 0.74,
+        });
+        bindBackdropClose(this.dim, () => this.getPanelWorldRect(), () => this.close());
 
         this.frame = scene.add.graphics();
         this.root.add(this.frame);
@@ -259,8 +266,8 @@ export class CodexModal {
         }).setOrigin(1, 0.5);
         this.fade = scene.add.graphics();
 
-        /* ---- footer close button (thumb height, pinned) ---- */
-        this.closeBtn = scene.add.container(W / 2, BODY.bottom + FOOTER_H / 2 + 2);
+        /* ---- footer close button (thumb height, pinned) — top-level at 9999 */
+        this.closeBtn = makeCloseLayer(scene, scene.add.container(W / 2, BODY.bottom + FOOTER_H / 2 + 2));
         const cbG = scene.add.graphics();
         cbG.fillStyle(0x2a1c4a, 0.98);
         cbG.lineStyle(4, 0xd8a24e, 1);
@@ -277,7 +284,7 @@ export class CodexModal {
         });
         this.closeBtn.add([cbG, cbText, cbZone]);
 
-        this.root.add([this.content, this.fade, this.scrollHint, this.bodyZone, this.closeBtn]);
+        this.root.add([this.content, this.fade, this.scrollHint, this.bodyZone]);
 
         this.wheelHandler = (p, over, dx, dy) => {
             if (this.visible) this.setScroll(this.scroll + dy * 0.6);
@@ -348,6 +355,11 @@ export class CodexModal {
         return this.visible;
     }
 
+    /** World rect of the parchment sheet (backdrop-close guard + tests). */
+    getPanelWorldRect() {
+        return localRectToWorld(this.root, PANEL.x, PANEL.y, PANEL.w, PANEL.h);
+    }
+
     toggle() {
         if (this.visible) this.close();
         else this.open();
@@ -361,8 +373,8 @@ export class CodexModal {
         this.audio?.pluck?.(523.25, { gain: 0.05, dur: 1.1 });
         this.visible = true;
         this.refresh();
-        this.root.setVisible(true).setAlpha(0).setScale(0.965);
-        scene.tweens.add({ targets: this.root, alpha: 1, scale: 1, duration: 260, ease: 'Back.easeOut' });
+        showModalChrome(scene, { blocker: this.dim, window: this.root, close: this.closeBtn },
+            { duration: 260, popScale: 0.965 });
         // unroll: the ink flows in just after the sheet appears
         scene.tweens.add({ targets: this.content, alpha: { from: 0, to: 1 }, duration: 320, delay: 90 });
         this.bus?.emit(EVENTS.CODEX_OPENED, { progress: this.codex.getProgress() });
@@ -375,10 +387,8 @@ export class CodexModal {
         this.visible = false;
         this.dragging = null;
         this.audio?.click?.(0);
-        scene.tweens.add({
-            targets: this.root, alpha: 0, scale: 0.975, duration: 200, ease: 'Quad.easeIn',
-            onComplete: () => this.root.setVisible(false),
-        });
+        hideModalChrome(scene, { blocker: this.dim, window: this.root, close: this.closeBtn },
+            { duration: 200, popScale: 0.975 });
         this.bus?.emit(EVENTS.CODEX_CLOSED, {});
         return this;
     }
@@ -780,10 +790,10 @@ export class CodexModal {
             rowCount: this.rowNodes.length,
             pages: this.codex?.getPages?.().length ?? 0,
             discovered: this.codex?.getDiscoveredCount?.() ?? 0,
-            depth: this.root?.depth ?? LAYERS.CODEX,
-            aboveAmbient: (this.root?.depth ?? LAYERS.CODEX) > LAYERS.AMBIENT,
-            buttonDepth: this.button?.depth ?? LAYERS.HUD,
-            buttonAboveAmbient: (this.button?.depth ?? LAYERS.HUD) > LAYERS.AMBIENT,
+            depth: this.root?.depth ?? LAYERS.MODAL_WINDOW,
+            aboveAmbient: (this.root?.depth ?? LAYERS.MODAL_WINDOW) > LAYERS.AMBIENT,
+            buttonDepth: this.button?.depth ?? LAYERS.HUD_BUTTONS,
+            buttonAboveAmbient: (this.button?.depth ?? LAYERS.HUD_BUTTONS) > LAYERS.AMBIENT,
         };
     }
 
@@ -796,8 +806,11 @@ export class CodexModal {
         this.destroyRows(this.rowNodes);
         this.destroyRows(this.headerNodes);
         this.parchment?.destroy?.();
+        this.dim?.destroy?.();
+        this.closeBtn?.destroy?.(true);
         this.root?.destroy?.();
         this.button?.destroy?.();
+        this.dim = this.closeBtn = null;
     }
 }
 

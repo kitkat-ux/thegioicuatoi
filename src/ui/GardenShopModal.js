@@ -26,7 +26,8 @@ import {
     REALM_SEEDS, REALM_SEED_BY_ID, getSeedsForRealm, resolveRealm,
 } from '../data/RealmsData.js';
 import {
-    bindBackdropClose, createPanelShield, guarded, localRectToWorld,
+    bindBackdropClose, createPanelShield, createModalBlocker, guarded,
+    hideModalChrome, localRectToWorld, makeCloseLayer, showModalChrome,
 } from './modalInput.js';
 
 const STAGE_W = 1080;
@@ -115,13 +116,18 @@ export class GardenShopModal {
         if (this.root) return this;
         const s = this.scene;
 
-        this.root = s.add.container(0, 0).setDepth(LAYERS.SHOP).setVisible(false);
+        /* ---- modal depth contract (HUD punch-through fix) ----
+           blocker 9000 (interactive — taps can never reach the HUD at 2000)
+           window  9500 (this root: panel + every widget)
+           close   9999 (top-level close button)                          */
+        this.root = s.add.container(0, 0).setDepth(LAYERS.MODAL_WINDOW).setVisible(false);
 
         /* ---- backdrop (tap outside the panel closes) ---- */
-        this.shade = s.add.rectangle(STAGE_W / 2, STAGE_H / 2, STAGE_W, STAGE_H, 0x05030c, 0.82)
-            .setInteractive();
+        this.shade = createModalBlocker(s, {
+            x: STAGE_W / 2, y: STAGE_H / 2, width: STAGE_W, height: STAGE_H,
+            color: 0x05030c, alpha: 0.82,
+        });
         bindBackdropClose(this.shade, () => this.getPanelWorldRect(), () => this.close());
-        this.root.add(this.shade);
 
         /* ---- panel: dark lacquer + gold filigree double frame ---- */
         const panel = s.add.graphics();
@@ -174,8 +180,8 @@ export class GardenShopModal {
             }).setOrigin(0, 0.5);
         this.root.add([title, npcName, greeting]);
 
-        /* ---- close ✕ ---- */
-        const closeBtn = s.add.container(PANEL_X + PANEL_W - 50, PANEL_Y + 50);
+        /* ---- close ✕ (top-level at LAYERS.MODAL_CLOSE — always on top) ---- */
+        const closeBtn = makeCloseLayer(s, s.add.container(PANEL_X + PANEL_W - 50, PANEL_Y + 50));
         const closeBg = s.add.graphics();
         closeBg.fillStyle(T.card, 0.98);
         closeBg.lineStyle(3, T.gold, 0.9);
@@ -187,7 +193,7 @@ export class GardenShopModal {
         const closeZone = s.add.zone(0, 0, 60, 60).setInteractive();
         closeZone.on('pointerdown', guarded(() => this.close()));
         closeBtn.add([closeBg, closeLabel, closeZone]);
-        this.root.add(closeBtn);
+        this.closeButton = closeBtn;
 
         /* ---- quest hub: hand the gardener back to the NPC's quest dialog ---- */
         const questBtn = s.add.container(PANEL_X + PANEL_W - 178, PANEL_Y + 50);
@@ -660,15 +666,8 @@ export class GardenShopModal {
         this.visible = true;
         this.audio?.click?.();
         this.refresh();
-        this.root.setVisible(true).setAlpha(0).setScale(0.94);
-        this.scene.tweens.killTweensOf(this.root);
-        this.scene.tweens.add({
-            targets: this.root,
-            alpha: 1,
-            scale: 1,
-            duration: 280,
-            ease: 'Back.easeOut',
-        });
+        showModalChrome(this.scene, { blocker: this.shade, window: this.root, close: this.closeButton },
+            { duration: 280, popScale: 0.94 });
         return this;
     }
 
@@ -677,15 +676,8 @@ export class GardenShopModal {
         this.visible = false;
         this.dragging = null;
         this.audio?.click?.();
-        this.scene.tweens.killTweensOf(this.root);
-        this.scene.tweens.add({
-            targets: this.root,
-            alpha: 0,
-            scale: 0.95,
-            duration: 190,
-            ease: 'Cubic.easeIn',
-            onComplete: () => this.root?.setVisible(false).setScale(1),
-        });
+        hideModalChrome(this.scene, { blocker: this.shade, window: this.root, close: this.closeButton },
+            { duration: 190, popScale: 0.95 });
         return this;
     }
 
@@ -709,8 +701,8 @@ export class GardenShopModal {
                 harmony: this.economy?.harmony ?? 0,
                 spiritStones: this.economy?.spiritStones ?? 0,
             },
-            depth: this.root?.depth ?? LAYERS.SHOP,
-            aboveAmbient: (this.root?.depth ?? LAYERS.SHOP) > LAYERS.AMBIENT,
+            depth: this.root?.depth ?? LAYERS.MODAL_WINDOW,
+            aboveAmbient: (this.root?.depth ?? LAYERS.MODAL_WINDOW) > LAYERS.AMBIENT,
         };
     }
 
@@ -724,7 +716,10 @@ export class GardenShopModal {
         this.moveHandler = this.releaseHandler = this.wheelHandler = null;
         for (const row of this.rows) row.destroy();
         this.rows = [];
+        this.shade?.destroy();
+        this.closeButton?.destroy(true);
         this.root?.destroy(true);
+        this.shade = this.closeButton = null;
         this.root = null;
         this.visible = false;
     }

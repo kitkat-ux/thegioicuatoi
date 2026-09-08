@@ -721,8 +721,8 @@ check('quest rows: completion by value (green_thumb at 10 blooms)', (() => {
         realmHasUniformTile, getUnlockedRealms,
     } = await import('../src/data/RealmsData.js');
 
-    check('RealmsData: 2 realms defined', Object.keys(REALMS).length === 2);
-    check('RealmsData: REALM_ORDER has 2 entries', REALM_ORDER.length === 2);
+    check('RealmsData: 5 realms defined', Object.keys(REALMS).length === 5);
+    check('RealmsData: REALM_ORDER has 5 entries', REALM_ORDER.length === 5);
     check('RealmsData: DEFAULT_GARDEN is first in order', REALM_ORDER[0] === 'DEFAULT_GARDEN');
     check('RealmsData: FROST_REALM is second in order', REALM_ORDER[1] === 'FROST_REALM');
 
@@ -731,8 +731,11 @@ check('quest rows: completion by value (green_thumb at 10 blooms)', (() => {
     check('RealmsData: FROST_REALM has frost background key', REALMS.FROST_REALM.backgroundKey === 'bg_frost_realm');
     check('RealmsData: FROST_REALM has uniform tile', REALMS.FROST_REALM.tileTextureKey === 'tile_frost_soil');
     check('RealmsData: DEFAULT_GARDEN has no uniform tile', REALMS.DEFAULT_GARDEN.tileTextureKey === null);
-    check('RealmsData: FROST_REALM has 2 exclusive seeds', REALMS.FROST_REALM.exclusiveSeeds.length === 2);
+    check('RealmsData: FROST_REALM has 3 exclusive seeds (5 realms × 2 = 10 total)', REALMS.FROST_REALM.exclusiveSeeds.length === 3);
     check('RealmsData: DEFAULT_GARDEN has no exclusive seeds', REALMS.DEFAULT_GARDEN.exclusiveSeeds.length === 0);
+    check('RealmsData: NETHER_REALM has 2 exclusive seeds', REALMS.NETHER_REALM.exclusiveSeeds.length === 2);
+    check('RealmsData: FLAME_REALM has 2 exclusive seeds', REALMS.FLAME_REALM.exclusiveSeeds.length === 2);
+    check('RealmsData: CELESTIAL_REALM has 3 exclusive seeds (5 realms × 2 = 10 total)', REALMS.CELESTIAL_REALM.exclusiveSeeds.length === 3);
 
     // resolveRealm
     check('RealmsData: resolveRealm returns correct realm', resolveRealm('FROST_REALM').id === 'FROST_REALM');
@@ -742,15 +745,20 @@ check('quest rows: completion by value (green_thumb at 10 blooms)', (() => {
     check('RealmsData: realmHasUniformTile true for FROST_REALM', realmHasUniformTile('FROST_REALM') === true);
     check('RealmsData: realmHasUniformTile false for DEFAULT_GARDEN', realmHasUniformTile('DEFAULT_GARDEN') === false);
 
-    // REALM_SEEDS
-    check('RealmsData: 2 realm-exclusive seeds', REALM_SEEDS.length === 2);
+    // REALM_SEEDS — 5 realms × 2 seeds each = 10 realm-exclusive seeds
+    check('RealmsData: 10 realm-exclusive seeds (5 realms × 2)', REALM_SEEDS.length === 10);
     check('RealmsData: Băng Liên seed exists', !!REALM_SEED_BY_ID['flower_bang_lien']);
     check('RealmsData: Tuyết Chi seed exists', !!REALM_SEED_BY_ID['flower_tuyet_chi']);
+    check('RealmsData: Bạch Tượng seed exists', !!REALM_SEED_BY_ID['flower_bach_tuong']);
+    check('RealmsData: Thiên Đao seed exists', !!REALM_SEED_BY_ID['flower_thien_dao']);
     check('RealmsData: Băng Liên belongs to FROST_REALM', REALM_SEED_BY_ID['flower_bang_lien'].realmId === 'FROST_REALM');
+    check('RealmsData: Dạ Dạ Cúc belongs to NETHER_REALM', REALM_SEED_BY_ID['flower_dacuc_daxa'].realmId === 'NETHER_REALM');
+    check('RealmsData: Hỏa Long Quả belongs to FLAME_REALM', REALM_SEED_BY_ID['flower_huolong_qua'].realmId === 'FLAME_REALM');
+    check('RealmsData: Thiên Huyền belongs to CELESTIAL_REALM', REALM_SEED_BY_ID['flower_thien_huyen'].realmId === 'CELESTIAL_REALM');
 
     // getSeedsForRealm
     check('RealmsData: DEFAULT_GARDEN returns empty (uses standard catalog)', getSeedsForRealm('DEFAULT_GARDEN').length === 0);
-    check('RealmsData: FROST_REALM returns 2 exclusive seeds', getSeedsForRealm('FROST_REALM').length === 2);
+    check('RealmsData: FROST_REALM returns 3 exclusive seeds', getSeedsForRealm('FROST_REALM').length === 3);
 
     // canPlantInRealm
     check('RealmsData: standard seeds plantable in DEFAULT_GARDEN', canPlantInRealm('flower_cyan_orchid', 'DEFAULT_GARDEN') === true);
@@ -760,8 +768,9 @@ check('quest rows: completion by value (green_thumb at 10 blooms)', (() => {
 
     // getUnlockedRealms
     const unlocked = getUnlockedRealms();
-    check('RealmsData: both realms unlocked', unlocked.length === 2);
+    check('RealmsData: all 5 realms unlocked', unlocked.length === 5);
     check('RealmsData: first unlocked is DEFAULT_GARDEN', unlocked[0].id === 'DEFAULT_GARDEN');
+    check('RealmsData: CELESTIAL_REALM is unlocked too', unlocked.some(r => r.id === 'CELESTIAL_REALM'));
 
     // Realm-specific NPC guardians (Task: realm NPCs + radiant aura)
     check('RealmsData: DEFAULT_GARDEN NPC is Tiên Nữ Hoa Giang', REALMS.DEFAULT_GARDEN.npc?.name === 'Tiên Nữ Hoa Giang');
@@ -810,7 +819,7 @@ check('quest rows: completion by value (green_thumb at 10 blooms)', (() => {
     check('Shop: modal uses the dark Guofeng panel (#121016) + gold border', /0x121016/.test(shopSrc) && /0xdfb15b/.test(shopSrc));
     check('Shop: modal stops pointer propagation (shield + guarded)', /createPanelShield/.test(shopSrc) && /guarded\(/.test(shopSrc) && /bindBackdropClose/.test(shopSrc));
     const sceneShop = fs.readFileSync(path.resolve('src/scenes/GardenScene.js'), 'utf8');
-    check('Scene: NPC tap + HUD button both open the Garden Shop', /onNpcClick\(\)[\s\S]{0,400}openGardenShop\(\)/.test(sceneShop) && /createShopEntryPoint\(\)/.test(sceneShop));
+    check('Scene: NPC tap opens dialog (two-step: onNpcClick→openDialog), HUD button opens shop', /onNpcClick\(\)[\s\S]{0,400}openDialog\(\)/.test(sceneShop) && /createShopEntryPoint\(\)/.test(sceneShop));
     check('Scene: registers GardenShopModal and blocks UI while open', /new GardenShopModal\(/.test(sceneShop) && /shopModal\?\.isOpen\(\)/.test(sceneShop));
 
     // Shop economy (live)

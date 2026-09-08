@@ -330,22 +330,47 @@ export class EconomySystem {
     }
 
     /** Initialize with starting resources */
-    init() {
-        this.spiritStones = 10;
-        this.harmony = 0;
-        this.inventory = {
-            flower_cyan_orchid: 5,
-            flower_emerald_bamboo: 5,
-        };
-        this.completedQuests = new Set();
-        this.stats = {
-            totalBlooms: 0,
-            totalHarvests: 0,
-            totalStonesEarned: 0,
-            maxSimultaneousBlooms: 0,
-            currentBlooms: 0,
-            rareBlooms: 0,
-        };
+    init(savedCurrencyOnly = false) {
+        if (savedCurrencyOnly) {
+            // When called from realm switch: currency already persisted globally,
+            // just load it and keep inventory/stats realm-specific
+            this.loadGlobalState();
+            // Reset realm-specific data
+            this.inventory = {};
+            this.completedQuests = new Set();
+            this.stats = {
+                totalBlooms: 0,
+                totalHarvests: 0,
+                totalStonesEarned: this.spiritStones > 0 ? this.stats.totalStonesEarned : 0,
+                maxSimultaneousBlooms: 0,
+                currentBlooms: 0,
+                rareBlooms: 0,
+            };
+            return;
+        }
+        
+        // First-time initialization: load global currency, then set defaults
+        this.loadGlobalState();
+        
+        // Only set defaults if no saved currency exists
+        if (this.spiritStones === 0 && this.harmony === 0) {
+            this.spiritStones = 10;
+            this.harmony = 0;
+            this.inventory = {
+                flower_cyan_orchid: 5,
+                flower_emerald_bamboo: 5,
+            };
+            this.completedQuests = new Set();
+            this.stats = {
+                totalBlooms: 0,
+                totalHarvests: 0,
+                totalStonesEarned: 0,
+                maxSimultaneousBlooms: 0,
+                currentBlooms: 0,
+                rareBlooms: 0,
+            };
+            this.saveGlobalState();
+        }
     }
 
     /**
@@ -511,24 +536,87 @@ export class EconomySystem {
         return SEED_RARITY[seedId] || 'common';
     }
 
-    /** Serialize state for saving */
+    /** Serialize state for saving (only realm-specific data, NOT currency) */
     serialize() {
         return {
+            // NOTE: Currency (spiritStones, harmony) is GLOBAL and never serialized
+            // per-realm. It persists across realm switches via economy.saveGlobalState().
             spiritStones: this.spiritStones,
-            harmony: this.harmony,
             inventory: { ...this.inventory },
             completedQuests: [...this.completedQuests],
             stats: { ...this.stats },
         };
     }
 
-    /** Deserialize state from save data */
+    /** Deserialize state from save data (only realm-specific data) */
     deserialize(data) {
         if (!data) return;
+        // Currency is loaded by loadGlobalState(), but also restored here for
+        // serialize/deserialize round-trip tests.
         this.spiritStones = data.spiritStones ?? 0;
-        this.harmony = data.harmony ?? 0;
         this.inventory = data.inventory ?? {};
         this.completedQuests = new Set(data.completedQuests ?? []);
-        this.stats = data.stats ?? this.stats;
+        this.stats = { ...this.stats, ...(data.stats ?? {}) };
+    }
+
+    /**
+     * Returns the current global currency snapshot for persistence.
+     * Called by saveGlobalState() before serializing to localStorage.
+     */
+    getGlobalCurrencySnapshot() {
+        return {
+            spiritStones: this.spiritStones,
+            harmony: this.harmony,
+            totalStonesEarned: this.stats.totalStonesEarned ?? 0,
+            totalHarmonyEarned: this.stats.totalHarmonyEarned ?? 0,
+        };
+    }
+
+    /**
+     * Global currency persistence: save spiritStones + harmony to localStorage.
+     * These are NEVER reset on realm switch — only plot arrays and scene theme data change.
+     * Call this BEFORE switching realms or on app pause.
+     */
+    saveGlobalState() {
+        try {
+            const snapshot = this.getGlobalCurrencySnapshot();
+            if (typeof localStorage !== 'undefined') {
+                localStorage.setItem('thegioicuatoi:currency', JSON.stringify(snapshot));
+            }
+        } catch (e) {
+            console.warn('[EconomySystem] Failed to save global currency:', e);
+        }
+    }
+
+    /**
+     * Load global currency from localStorage.
+     * Called ONCE at app startup (not per-realm). Currency persists across realm switches.
+     */
+    loadGlobalState() {
+        try {
+            if (typeof localStorage === 'undefined') return;
+            const raw = localStorage.getItem('thegioicuatoi:currency');
+            if (raw) {
+                const data = JSON.parse(raw);
+                this.spiritStones = data.spiritStones ?? 10;
+                this.harmony = data.harmony ?? 0;
+                // Restore earned totals so quest milestones still track
+                if (data.totalStonesEarned) this.stats.totalStonesEarned = data.totalStonesEarned;
+                if (data.totalHarmonyEarned) this.stats.totalHarmonyEarned = data.totalHarmonyEarned;
+            }
+        } catch (e) {
+            console.warn('[EconomySystem] Failed to load global currency:', e);
+        }
+    }
+
+    /**
+     * Reset currency to initial state (for new game / debugging only).
+     * WARNING: Do NOT call this on realm switch — currency must persist globally.
+     */
+    resetCurrency() {
+        this.spiritStones = 10;
+        this.harmony = 0;
+        this.stats.totalStonesEarned = 0;
+        this.stats.totalHarmonyEarned = 0;
     }
 }

@@ -24,6 +24,13 @@ import {
     resolveSoil, soilYieldMult, rollInstantMature,
 } from '../data/SoilTypes.js';
 import { createPlotData, hydratePlotData, plotBloomDelay, drainPlotWater } from '../data/PlotData.js';
+import {
+    REALMS, REALM_IDS, REALM_SEEDS, REALM_SEED_BY_ID,
+    resolveRealm, getSeedsForRealm, canPlantInRealm,
+    saveRealmPlots, loadRealmPlots, saveActiveRealm, loadActiveRealm,
+    realmHasUniformTile,
+} from '../data/RealmsData.js';
+import RealmModal from '../ui/RealmModal.js';
 
 const W = 1080;
 const H = 1920;
@@ -141,6 +148,10 @@ export default class GardenScene extends Phaser.Scene {
         this.alchemyModal = null; // System 5: bronze cauldron UI + HUD medallion
         this.beastModal = null;   // System 6: Vườn Linh Thú (Spirit Beast Sanctuary)
         this.beasts = null;       // System 6: affinity, Linh Ngư bag, LocalStorage
+        // Bí Cảnh (Secret Realms) expedition system
+        this.activeRealmId = null; // set in create() from LocalStorage
+        this.activeRealm = null;   // resolved realm definition
+        this.realmModal = null;    // RealmModal overlay UI
     }
 
     /* ============================ PRELOAD ============================ */
@@ -184,6 +195,25 @@ export default class GardenScene extends Phaser.Scene {
         // time (see soilTextureKey()), so the grid never renders a missing key.
         for (const tex of SOIL_TEXTURES) {
             if (!this.textures.exists(tex.key)) this.load.image(tex.key, tex.path);
+        }
+
+        // Bí Cảnh (Secret Realms) — realm backgrounds, tiles, and exclusive
+        // seed sprites. Loaded for every unlocked realm so switching is instant.
+        for (const realmId of Object.keys(REALMS)) {
+            const realm = REALMS[realmId];
+            if (realm.backgroundKey && realm.backgroundPath && !this.textures.exists(realm.backgroundKey)) {
+                this.load.image(realm.backgroundKey, realm.backgroundPath);
+            }
+            if (realm.tileTextureKey && realm.tileTexturePath && !this.textures.exists(realm.tileTextureKey)) {
+                this.load.image(realm.tileTextureKey, realm.tileTexturePath);
+            }
+        }
+        // Realm-exclusive seed sprites (Băng Liên, Tuyết Chi, …)
+        for (const seed of REALM_SEEDS) {
+            const expectedPath = `./assets/plants/${seed.sprite_key}.png`;
+            if (!this.textures.exists(seed.sprite_key)) {
+                this.load.image(seed.sprite_key, expectedPath);
+            }
         }
 
         // Log any 404 failures so missing assets are immediately visible
@@ -237,8 +267,19 @@ export default class GardenScene extends Phaser.Scene {
         this.beasts = new BeastSystem({ bus: this.bus }).bind(this.bus);
         this.beasts.load();
 
-        // Background covers 1080x1920
-        this.add.image(W / 2, H / 2, 'bg_manor_isometric').setDisplaySize(W, H).setDepth(D.BG);
+        // Bí Cảnh (Secret Realms) — determine active realm before anything else
+        // so the background, tiles, and saved plots all match.
+        this.activeRealmId = loadActiveRealm();
+        this.activeRealm = resolveRealm(this.activeRealmId);
+        // Merge realm-exclusive seeds into SEED_BY_ID so the bloom system can
+        // look them up by id (bloomTile, petal bursts, codex discovery, …).
+        for (const [id, seed] of Object.entries(REALM_SEED_BY_ID)) {
+            if (!SEED_BY_ID[id]) SEED_BY_ID[id] = seed;
+        }
+
+        // Background covers 1080x1920 — uses the active realm's background
+        // (DEFAULT_GARDEN uses bg_manor_isometric; FROST_REALM uses bg_frost_realm).
+        this.add.image(W / 2, H / 2, this.activeRealm.backgroundKey).setDisplaySize(W, H).setDepth(D.BG);
 
         this.audio = new AudioManager(this);
         this.input.once('pointerdown', () => {
@@ -248,6 +289,8 @@ export default class GardenScene extends Phaser.Scene {
 
         this.createPlatform();
         this.createBridgeAndNpc();
+        // Bí Cảnh: load per-realm saved plots from LocalStorage before building the grid
+        this.savedPlots = loadRealmPlots(this.activeRealmId);
         this.createGrid();
         this.createHud();
         this.createActionBar();
@@ -269,6 +312,15 @@ export default class GardenScene extends Phaser.Scene {
             audio: this.audio,
         }).create();
         this.createBeastEntryPoint();
+
+        // Bí Cảnh (Secret Realms) — portal HUD button + realm selector modal
+        this.realmModal = new RealmModal(this, {
+            bus: this.bus,
+            audio: this.audio,
+            activeRealmId: this.activeRealmId,
+            onSelectRealm: (realmId) => this.switchRealm(realmId),
+        }).create();
+        this.createRealmEntryPoint();
 
         this.createMist();
         this.createParticleEmitters();
@@ -337,6 +389,9 @@ export default class GardenScene extends Phaser.Scene {
     /** Tear every system down with the scene (bus listeners included). */
     shutdown() {
         this.hideSoilModal();
+        // Bí Cảnh: save plot state before the scene tears down (restart or exit)
+        this.persistCurrentRealmPlots();
+        this.realmModal?.destroy();
         this.beastModal?.destroy();
         this.fishingModal?.destroy();
         this.alchemyModal?.destroy();
@@ -966,13 +1021,19 @@ export default class GardenScene extends Phaser.Scene {
     /* ============================ GRID ============================ */
     createGrid() {
         this.tileHighlight = this.add.image(-400, -400, 'tile_highlight').setVisible(false).setDepth(D.TILES + 5);
+        // Bí Cảnh: when the active realm uses uniform tiles (e.g. FROST_REALM),
+        // every plot renders with the realm tile texture regardless of soil type.
+        const realmTileKey = (realmHasUniformTile(this.activeRealmId) && this.textures.exists(this.activeRealm.tileTextureKey))
+            ? this.activeRealm.tileTextureKey
+            : null;
         for (let r = 0; r < ROWS; r++) {
             this.tiles[r] = [];
             for (let c = 0; c < COLS; c++) {
                 const pos = IsoMath.gridToScreen(c, r, ORIGIN.x, ORIGIN.y);
                 const saved = this.savedPlots?.[r]?.[c];
                 const data = saved ? hydratePlotData(saved, r, c) : createPlotData(r, c);
-                const tile = this.add.image(pos.x, pos.y, this.soilTextureKey(data.soilType))
+                const texKey = realmTileKey ?? this.soilTextureKey(data.soilType);
+                const tile = this.add.image(pos.x, pos.y, texKey)
                     .setInteractive(
                         new Phaser.Geom.Polygon(IsoMath.hitAreaPoints),
                         Phaser.Geom.Polygon.Contains
@@ -1173,9 +1234,9 @@ export default class GardenScene extends Phaser.Scene {
         return this.tiles[r]?.[c] ?? null;
     }
 
-    /** True when a full-screen overlay (drawer / dialog / codex / alchemy / fishing / beast / ad) is up. */
+    /** True when a full-screen overlay (drawer / dialog / codex / alchemy / fishing / beast / realm / ad) is up. */
     uiBlocked() {
-        return !!(this.drawerOpen || this.dialogVisible || this.adWatching || this.soilModalOpen || this.codexModal?.isOpen() || this.fishingModal?.isOpen() || this.alchemyModal?.isOpen() || this.beastModal?.isOpen());
+        return !!(this.drawerOpen || this.dialogVisible || this.adWatching || this.soilModalOpen || this.codexModal?.isOpen() || this.fishingModal?.isOpen() || this.alchemyModal?.isOpen() || this.beastModal?.isOpen() || this.realmModal?.isOpen());
     }
 
     /** Open the presentation-only fishing pier UI. */
@@ -1232,6 +1293,91 @@ export default class GardenScene extends Phaser.Scene {
         button.add([bg, icon, label, sub, zone]);
         this.beastButton = button;
         this.tweens.add({ targets: button, y: { from: 392, to: 388 }, duration: 2200, yoyo: true, repeat: -1, ease: 'Sine.easeInOut', delay: 200 });
+    }
+
+    /** HUD entry point for Bí Cảnh (Secret Realms) — portal button. */
+    createRealmEntryPoint() {
+        const button = this.add.container(300, 392).setDepth(D.HUD);
+        const bg = this.add.graphics();
+        bg.fillStyle(0x1a0f2e, 0.9).lineStyle(2, 0x7ff7ff, 0.8);
+        bg.fillRoundedRect(-112, -34, 224, 68, 16).strokeRoundedRect(-112, -34, 224, 68, 16);
+        const icon = this.add.text(-80, 0, '⛩', {
+            fontFamily: 'Arial', fontSize: '40px', color: '#7ff7ff',
+        }).setOrigin(0.5);
+        const label = this.add.text(-42, -2, 'Bí Cảnh', {
+            fontFamily: DIALOG_FONT, fontSize: '23px', color: '#d7f0ff', fontStyle: 'bold',
+            stroke: '#12303d', strokeThickness: 4,
+        }).setOrigin(0, 0.5);
+        const realmName = this.activeRealm?.name ?? 'Linh Đảo';
+        const sub = this.add.text(-42, 21, realmName.substring(0, 12), {
+            fontFamily: DIALOG_FONT, fontSize: '15px', color: '#83c9d9',
+            stroke: '#12303d', strokeThickness: 3,
+        }).setOrigin(0, 0.5);
+        const zone = this.add.zone(0, 0, 224, 68).setInteractive({ useHandCursor: true });
+        zone.on('pointerdown', () => {
+            this.audio?.ensure?.();
+            this.realmModal?.open();
+        });
+        zone.on('pointerover', () => bg.lineStyle(3, 0xbaf0f8, 1).strokeRoundedRect(-112, -34, 224, 68, 16));
+        zone.on('pointerout', () => bg.lineStyle(2, 0x7ff7ff, 0.8).strokeRoundedRect(-112, -34, 224, 68, 16));
+        button.add([bg, icon, label, sub, zone]);
+        this.realmButton = button;
+        this.realmButtonSub = sub;
+        this.tweens.add({ targets: button, y: { from: 392, to: 388 }, duration: 2400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut', delay: 400 });
+    }
+
+    /**
+     * Switch to a different realm: save current plots, fade-to-white transition,
+     * then restart GardenScene with the new realm's background/tiles/saved data.
+     */
+    switchRealm(realmId) {
+        if (realmId === this.activeRealmId) {
+            this.realmModal?.close();
+            return;
+        }
+        // Save current realm's plot state before switching
+        this.persistCurrentRealmPlots();
+        // Close the modal
+        this.realmModal?.close();
+        // Smooth fade-to-white transition overlay
+        const fade = this.add.rectangle(W / 2, H / 2, W, H, 0xffffff, 0).setDepth(9999);
+        this.tweens.add({
+            targets: fade,
+            alpha: 1,
+            duration: 600,
+            ease: 'Cubic.easeIn',
+            onComplete: () => {
+                // Persist the new active realm and restart the scene
+                saveActiveRealm(realmId);
+                this.scene.restart();
+            },
+        });
+    }
+
+    /** Serialize the current grid's plot data and save to the active realm's LocalStorage slot. */
+    persistCurrentRealmPlots() {
+        if (!this.tiles || !this.tiles.length) return;
+        // Inline serialize (mirrors PlotData.serializePlotData — no sprites)
+        const plots = [];
+        for (let r = 0; r < ROWS; r++) {
+            plots[r] = [];
+            for (let c = 0; c < COLS; c++) {
+                const tile = this.tiles[r]?.[c];
+                if (!tile) { plots[r][c] = null; continue; }
+                const d = tile.gridData;
+                plots[r][c] = {
+                    row: d.row, col: d.col,
+                    state: d.state,
+                    seedId: d.seedId,
+                    soilType: d.soilType ?? 'HOANG_THO',
+                    watered: !!d.watered,
+                    water: d.water ?? 0,
+                    rainWatered: !!d.rainWatered,
+                    plantedAt: d.plantedAt ?? 0,
+                };
+            }
+        }
+        saveRealmPlots(this.activeRealmId, plots);
     }
 
     /** Open the Vạn Hoa Đồ Giám scroll (also callable from tests / NPC dialog). */
@@ -1317,6 +1463,13 @@ export default class GardenScene extends Phaser.Scene {
     tryPlantSeed(tile) {
         const seed = this.selectedSeed;
         if (!seed || tile.gridData.state !== STATE.EMPTY) return false;
+        // Bí Cảnh: realm-exclusive seeds are always free in their home realm
+        const isRealmSeed = !!REALM_SEED_BY_ID[seed.id];
+        if (isRealmSeed && canPlantInRealm(seed.id, this.activeRealmId)) {
+            this.plantSeed(tile);
+            this.refreshSeedCards();
+            return true;
+        }
         if (!this.economy.consumeSeed(seed.id)) {
             const cost = this.economy.getSeedCost(seed.id);
             const buy = this.economy.purchaseSeed(seed.id);
@@ -1560,6 +1713,28 @@ export default class GardenScene extends Phaser.Scene {
     }
 
     /* ============================ SEARCH DRAWER ============================ */
+    /**
+     * Bí Cảnh: the seed list available in the active realm's drawer.
+     * DEFAULT_GARDEN shows all standard seeds; other realms show only their
+     * exclusive seeds (Băng Liên, Tuyết Chi, …).
+     */
+    getDrawerSeeds() {
+        if (this.activeRealmId === REALM_IDS.DEFAULT_GARDEN) {
+            return SEED_CATALOG;
+        }
+        const realmSeeds = getSeedsForRealm(this.activeRealmId);
+        // Ensure searchText is populated for search filtering
+        for (const seed of realmSeeds) {
+            if (!seed.searchText) {
+                seed.searchText = normalizeText([
+                    seed.id, seed.name, seed.english, seed.colorName,
+                    seed.color_hex, seed.sprite_key, ...(seed.search_keywords ?? []),
+                ].join(' '));
+            }
+        }
+        return realmSeeds;
+    }
+
     createDrawer() {
         this.drawer = this.add.container(0, H).setDepth(D.DRAWER);
         const panel = this.add.graphics();
@@ -1601,8 +1776,10 @@ export default class GardenScene extends Phaser.Scene {
         this.searchInput.node.addEventListener('input', (e) => this.onSearchInput(e.target.value));
         this.searchInput.setVisible(false);
 
-        // seed cards
-        this.seedCards = SEED_CATALOG.map((seed, i) => this.createSeedCard(seed, i));
+        // seed cards — Bí Cảnh: use realm-aware seed list
+        const drawerSeeds = this.getDrawerSeeds();
+        this.drawerSeeds = drawerSeeds;
+        this.seedCards = drawerSeeds.map((seed, i) => this.createSeedCard(seed, i));
         this.seedCards.forEach((c) => this.drawer.add(c.container));
 
         // selected-seed chip (below the island shadow, above the action bar)
@@ -1653,9 +1830,11 @@ export default class GardenScene extends Phaser.Scene {
             fontFamily: 'Georgia, serif', fontSize: '24px', color: C.text,
             align: 'center', wordWrap: { width: w - 20 }, fontStyle: 'bold',
         }).setOrigin(0.5);
-        const cost = this.economy.getSeedCost(seed.id);
-        const premium = cost > 0;
-        const costLabel = premium ? `${cost} 💎` : 'Miễn phí';
+        // Bí Cảnh: realm-exclusive seeds are always free in their home realm
+        const isRealmSeed = !!REALM_SEED_BY_ID[seed.id];
+        const cost = isRealmSeed ? 0 : this.economy.getSeedCost(seed.id);
+        const premium = cost > 0 && !isRealmSeed;
+        const costLabel = isRealmSeed ? 'Bí Cảnh ✦' : (premium ? `${cost} 💎` : 'Miễn phí');
         const sub = this.add.text(0, 88, `${seed.colorName} · ${costLabel}`, {
             fontFamily: 'Georgia, serif', fontSize: '19px', color: '#b9a3dd',
         }).setOrigin(0.5);
@@ -1688,6 +1867,11 @@ export default class GardenScene extends Phaser.Scene {
         }
 
         const refresh = () => {
+            // Bí Cảnh: realm seeds are always unlimited in their home realm
+            if (isRealmSeed) {
+                owned.setText('∞ Bí Cảnh độc quyền');
+                return;
+            }
             const n = this.economy.getInventoryCount(seed.id);
             if (!premium) {
                 owned.setText('∞ không giới hạn');
@@ -1769,8 +1953,10 @@ export default class GardenScene extends Phaser.Scene {
 
     applyFilter(query) {
         const q = normalizeText(query).trim();
-        SEED_CATALOG.forEach((seed, i) => {
+        const seeds = this.drawerSeeds ?? SEED_CATALOG;
+        seeds.forEach((seed, i) => {
             const card = this.seedCards[i];
+            if (!card) return;
             const match = !q || seed.searchText.includes(q);
             card.container.setVisible(match);
             if (match) card.draw(this.selectedSeed?.id === seed.id);
@@ -1785,6 +1971,19 @@ export default class GardenScene extends Phaser.Scene {
     selectSeed(seed) {
         this.audio.ensure();
         this.audio.click();
+        // Bí Cảnh: realm-exclusive seeds are always free in their home realm
+        const isRealmSeed = !!REALM_SEED_BY_ID[seed.id];
+        if (isRealmSeed && canPlantInRealm(seed.id, this.activeRealmId)) {
+            this.selectedSeed = seed;
+            this.activeTool = TOOL.SEED;
+            this.harvestAllBtn?.setActive?.(false);
+            this.seedCards.forEach((c) => c.draw(c.seed.id === seed.id));
+            this.refreshSeedCards();
+            this.time.delayedCall(200, () => this.closeDrawer());
+            this.showSelectedChip(seed);
+            this.updateHint();
+            return true;
+        }
         if (!this.economy.isFreeSeed(seed.id) && this.economy.getInventoryCount(seed.id) <= 0) {
             const buy = this.economy.purchaseSeed(seed.id);
             if (!buy.success) {

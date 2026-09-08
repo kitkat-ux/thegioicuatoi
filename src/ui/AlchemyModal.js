@@ -8,22 +8,29 @@
  * Two halves, mirroring CodexModal:
  *  1. a bronze cauldron medallion parked on the top HUD (right column, below
  *     the codex scroll), with an elixir count badge + attention pulse;
- *  2. a full overlay: a big procedural bronze cauldron with a subtle flame
- *     animation beneath, the three recipe cards, the ingredient slot picker
- *     (current inventory vs required), the herb shelf, the elixir shelf with
- *     per-elixir "Dùng" buttons, the "Luyện Đan" CTA with countdown + claim
- *     button, and the live active-buff line.
+ *  2. a full overlay: the Bát Quái Lô (`furnace_bagua.png`) with a smooth
+ *     breathing tween, the three recipe cards (pill sprites in the slots),
+ *     the ingredient slot picker, the herb shelf, the elixir shelf with
+ *     Trúc Cơ Đan / Cửu Chuyển Thần Đan art, the "Luyện Đan" CTA with
+ *     countdown + claim button, and the live active-buff line.
  *
- * No new image assets: the cauldron, flame and medallion are drawn with
- * Graphics + the shared 'glow'/'spark' textures (07_VISUAL_ASSET_CATALOG
- * pipeline is untouched — verify:assets keeps its "no orphan files" gate).
+ * Furnace + pill art comes from `data/AlchemyAssetManifest.js`. The HUD
+ * medallion stays a procedural glyph so the top chrome never 404s if a
+ * PNG fails to load (headless tests use the same fallback).
  */
 import Phaser from 'phaser';
 import { LAYERS } from '../core/Layers.js';
 import { EVENTS } from '../systems/EventManager.js';
 import { HERBS, ELIXIRS, ALCHEMY_RECIPES } from '../systems/AlchemyManager.js';
+import { ALCHEMY_ASSETS } from '../data/AlchemyAssetManifest.js';
 import { DIALOG_FONT } from '../systems/DialogSystem.js';
 import { bindBackdropClose, createPanelShield, guarded, localRectToWorld } from './modalInput.js';
+
+/** Recipe / inventory slot art: Tụ Khí Đan → Trúc Cơ Đan, Tẩy Tủy Đan → Cửu Chuyển Thần Đan. */
+const PILL_BY_ELIXIR = {
+    tu_khi_dan: ALCHEMY_ASSETS.pill_tier1,
+    tay_tui_dan: ALCHEMY_ASSETS.pill_tier3,
+};
 
 const W = 1080;
 const H = 1920;
@@ -419,22 +426,14 @@ export class AlchemyModal {
     buildCauldron() {
         const { scene } = this;
         const c = scene.add.container(0, LAYOUT.cauldronY);
+        const furnace = ALCHEMY_ASSETS.furnace_bagua;
+        const furnaceKey = furnace.key;
+        this.flameGraphic = null;
+        this.furnaceImage = null;
+        this.flamePhase = 0;
 
-        const pot = scene.add.graphics();
-        drawCauldron(pot, 1);
-        c.add(pot);
-
-        // spirit-elixir shimmer over the liquid
-        const liqGlow = scene.add.image(0, -78, 'glow')
-            .setTint(SPIRIT).setAlpha(0.35).setScale(0.85, 0.34);
-        scene.tweens.add({
-            targets: liqGlow, alpha: { from: 0.25, to: 0.5 }, duration: 1600,
-            yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
-        });
-        c.add(liqGlow);
-
-        // fire glow beneath the pot
-        const fireGlow = scene.add.image(0, 128, 'glow')
+        // fire glow beneath the pot (sits behind the furnace art)
+        const fireGlow = scene.add.image(0, 118, 'glow')
             .setTint(0xff7a2c).setAlpha(0.4).setScale(1.05, 0.5);
         scene.tweens.add({
             targets: fireGlow, alpha: { from: 0.28, to: 0.55 }, scale: { from: 1.0, to: 1.12 },
@@ -442,31 +441,60 @@ export class AlchemyModal {
         });
         c.add(fireGlow);
 
-        // the flame itself: outer + inner tongues
-        const flame = scene.add.graphics();
-        const drawFlame = (k) => {
-            flame.clear();
-            flame.fillStyle(FIRE, 0.9);
-            flame.fillTriangle(-46 * k, 128, 0, 66 * k + 128, 46 * k, 128);
-            flame.fillStyle(FIRE_CORE, 0.95);
-            flame.fillTriangle(-24 * k, 128, 0, 92 * k + 128, 24 * k, 128);
-        };
-        drawFlame(1);
-        this.flameGraphic = flame;
-        this.flamePhase = 0;
-        // alpha pulse via tween; the scale flicker is driven from tickUI so
-        // the two never fight over the same property
-        scene.tweens.add({
-            targets: flame,
-            alpha: { from: 0.72, to: 1 },
-            duration: 340,
-            yoyo: true,
-            repeat: -1,
-            ease: 'Sine.easeInOut',
-        });
-        c.add(flame);
+        if (scene.textures.exists(furnaceKey)) {
+            // Bát Quái Lô — centred, origin from the art contract, breathing scale.
+            const img = scene.add.image(0, 8, furnaceKey)
+                .setOrigin(furnace.origin?.x ?? 0.5, furnace.origin?.y ?? 0.55);
+            const maxH = 300;
+            const srcH = furnace.height || img.height || maxH;
+            const srcW = furnace.width || img.width || maxH;
+            const k = maxH / srcH;
+            img.setDisplaySize(srcW * k, srcH * k);
+            const sx = img.scaleX;
+            const sy = img.scaleY;
+            scene.tweens.add({
+                targets: img,
+                scaleX: { from: sx * 0.985, to: sx * 1.04 },
+                scaleY: { from: sy * 0.985, to: sy * 1.04 },
+                duration: 2400,
+                yoyo: true,
+                repeat: -1,
+                ease: 'Sine.easeInOut',
+            });
+            this.furnaceImage = img;
+            c.add(img);
+        } else {
+            // Headless / missing-PNG fallback: the original vector pot.
+            const pot = scene.add.graphics();
+            drawCauldron(pot, 1);
+            c.add(pot);
 
-        // rising sparks
+            const liqGlow = scene.add.image(0, -78, 'glow')
+                .setTint(SPIRIT).setAlpha(0.35).setScale(0.85, 0.34);
+            scene.tweens.add({
+                targets: liqGlow, alpha: { from: 0.25, to: 0.5 }, duration: 1600,
+                yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+            });
+            c.add(liqGlow);
+
+            const flame = scene.add.graphics();
+            flame.fillStyle(FIRE, 0.9);
+            flame.fillTriangle(-46, 128, 0, 194, 46, 128);
+            flame.fillStyle(FIRE_CORE, 0.95);
+            flame.fillTriangle(-24, 128, 0, 220, 24, 128);
+            this.flameGraphic = flame;
+            scene.tweens.add({
+                targets: flame,
+                alpha: { from: 0.72, to: 1 },
+                duration: 340,
+                yoyo: true,
+                repeat: -1,
+                ease: 'Sine.easeInOut',
+            });
+            c.add(flame);
+        }
+
+        // rising sparks from the furnace mouth
         this.flameSparks = scene.add.particles(0, -110, 'spark', {
             speedY: { min: -95, max: -35 },
             speedX: { min: -14, max: 14 },
@@ -480,9 +508,9 @@ export class AlchemyModal {
         });
         c.add(this.flameSparks);
 
-        // gentle furnace breathing
+        // gentle furnace breathing (the whole assembly floats a few pixels)
         scene.tweens.add({
-            targets: c, y: { from: LAYOUT.cauldronY - 3, to: LAYOUT.cauldronY + 3 },
+            targets: c, y: { from: LAYOUT.cauldronY - 4, to: LAYOUT.cauldronY + 4 },
             duration: 2600, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
         });
         return c;
@@ -509,14 +537,29 @@ export class AlchemyModal {
             g.lineStyle(3, GOLD, 0.85);
             g.fillRoundedRect(-126, -44, 252, 88, 16);
             g.strokeRoundedRect(-126, -44, 252, 88, 16);
-            g.fillStyle(e.tint, 1);
-            g.fillCircle(-98, 0, 20);
-            g.fillStyle(0x170f24, 0.85);
-            g.fillCircle(-98, -5, 11, 5); // elixir pill notch
-            const name = text(scene, -64, -14, e.name, {
+            const pillSpec = PILL_BY_ELIXIR[e.id];
+            let pill = null;
+            if (pillSpec && scene.textures.exists(pillSpec.key)) {
+                pill = scene.add.image(-98, 0, pillSpec.key);
+                fitImage(pill, 46, 46);
+            } else {
+                g.fillStyle(e.tint, 1);
+                g.fillCircle(-98, 0, 20);
+                g.fillStyle(0x170f24, 0.85);
+                g.fillCircle(-98, -5, 11, 5); // elixir pill notch
+            }
+            const displayName = pillSpec?.description
+                ? e.name
+                : e.name;
+            const name = text(scene, -64, pillSpec ? -16 : -14, displayName, {
                 fontSize: '16px', color: '#ffe9c4', fontStyle: 'bold',
                 wordWrap: { width: 100 }, align: 'left',
             });
+            const flavor = pillSpec
+                ? text(scene, -64, 4, pillHonorific(pillSpec), {
+                    fontSize: '13px', color: '#9ff0ff', fontStyle: 'italic',
+                })
+                : null;
             const count = text(scene, -64, 22, '×0', {
                 fontSize: '20px', color: '#ffe9a8', fontStyle: 'bold',
             });
@@ -530,7 +573,7 @@ export class AlchemyModal {
             }).setOrigin(0.5);
             const useZone = scene.add.zone(88, 0, 60, 40).setInteractive({ useHandCursor: true });
             useZone.on('pointerdown', guarded(() => this.onUseElixir(e.id)));
-            chip.add([g, name, count, useBg, useLabel, useZone]);
+            chip.add([g, ...(pill ? [pill] : []), name, ...(flavor ? [flavor] : []), count, useBg, useLabel, useZone]);
             this.content.add(chip);
             this.elixirChips.push({ id: e.id, count, useBg, useLabel, useZone });
         });
@@ -556,11 +599,21 @@ export class AlchemyModal {
                 g.strokeRoundedRect(0, 0, 800, 76, 14);
             };
             draw(this.selectedRecipeId === r.id);
-            const name = text(scene, 24, 22, r.name, {
-                fontSize: '24px', color: '#ffe9c4', fontStyle: 'bold',
+            const pillSpec = PILL_BY_ELIXIR[r.elixirId];
+            let pill = null;
+            let textX = 24;
+            if (pillSpec && scene.textures.exists(pillSpec.key)) {
+                pill = scene.add.image(44, 38, pillSpec.key);
+                fitImage(pill, 48, 48);
+                textX = 78;
+            }
+            const name = text(scene, textX, 18, pillSpec
+                ? `${r.name} · ${pillHonorific(pillSpec)}`
+                : r.name, {
+                fontSize: '22px', color: '#ffe9c4', fontStyle: 'bold',
             });
-            const desc = text(scene, 24, 52, r.description, {
-                fontSize: '17px', color: '#b9a3dd',
+            const desc = text(scene, textX, 48, r.description, {
+                fontSize: '16px', color: '#b9a3dd',
             });
             // ingredient dots + required counts (static)
             let ix = 470;
@@ -581,7 +634,7 @@ export class AlchemyModal {
             }).setOrigin(1, 0.5);
             const zone = scene.add.zone(0, 0, 800, 76).setInteractive({ useHandCursor: true });
             zone.on('pointerdown', guarded(() => this.selectRecipe(r.id)));
-            card.add([g, name, desc, dots, ...cnts, meta, zone]);
+            card.add([g, ...(pill ? [pill] : []), name, desc, dots, ...cnts, meta, zone]);
             this.content.add(card);
             this.recipeCards.push({ recipe: r, card, draw, selected: this.selectedRecipeId === r.id });
         });
@@ -905,6 +958,22 @@ export class AlchemyModal {
         this.button?.destroy(true);
         this.visible = false;
     }
+}
+
+/** Scale an image to fit inside (maxW × maxH) preserving aspect ratio. */
+function fitImage(img, maxW, maxH) {
+    const fw = img.width || 1;
+    const fh = img.height || 1;
+    const k = Math.min(maxW / fw, maxH / fh);
+    img.setDisplaySize(fw * k, fh * k);
+    return img;
+}
+
+/** "Trúc Cơ Đan — viên đan…" → "Trúc Cơ Đan" */
+function pillHonorific(spec) {
+    const d = spec?.description ?? '';
+    const cut = d.split('—')[0].split(' - ')[0].trim();
+    return cut || '';
 }
 
 export default AlchemyModal;

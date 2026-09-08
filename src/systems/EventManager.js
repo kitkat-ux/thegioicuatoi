@@ -71,6 +71,16 @@ export const EVENTS = {
     /** stable public name (per spec): an elixir was consumed, its buff is now active */
     ELIXIR_CONSUMED: 'ELIXIR_CONSUMED',
 
+    /* system 2 — Linh Đầm Câu Ngư (zen fishing) */
+    /** a Linh Ngư (or koi counted as one) was landed: { itemId, name, amount } */
+    FISH_CAUGHT: 'fishing:fish-caught',
+
+    /* system 3 — Ngự Thú Tiên Viên (spirit beasts) */
+    BEAST_FED: 'beast:fed',
+    BEAST_PETTED: 'beast:petted',
+    BEAST_AFFINITY_CHANGED: 'beast:affinity-changed',
+    BEAST_STATE_CHANGED: 'beast:state-changed',
+
     /* UI */
     CODEX_OPEN_REQUEST: 'ui:codex-open-request',
     CODEX_OPENED: 'ui:codex-opened',

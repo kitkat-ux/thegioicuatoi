@@ -15,8 +15,10 @@ import FishingModal from '../ui/FishingModal.js';
 import { FISHING_TEXTURES } from '../data/FishingAssetManifest.js';
 import { AlchemyManager } from '../systems/AlchemyManager.js';
 import { AlchemyModal } from '../ui/AlchemyModal.js';
+import { ALCHEMY_ASSETS } from '../data/AlchemyAssetManifest.js';
 import BeastModal from '../ui/BeastModal.js';
 import { BEAST_ASSETS } from '../data/BeastAssetManifest.js';
+import { BeastSystem } from '../systems/BeastSystem.js';
 
 const W = 1080;
 const H = 1920;
@@ -124,7 +126,7 @@ export default class GardenScene extends Phaser.Scene {
         this.bus = null;          // EventManager — the single inter-system channel
         this.codex = null;        // System 9: Vạn Hoa Đồ Giám (state + rules)
         this.codexModal = null;   // System 9: scroll UI + HUD button
-        this.fishingModal = null; // presentation-only fishing pier UI
+        this.fishingModal = null; // Câu Cá Hồ Tiên (lands Linh Ngư on the bus)
         this.weather = null;      // System 8: Thiên Thời Tứ Thời (simulation)
         this.weatherView = null;  // System 8: ambient light / rain renderer
         this.codexBuffs = null;   // last aggregated codex buffs
@@ -133,6 +135,7 @@ export default class GardenScene extends Phaser.Scene {
         this.alchemy = null;      // System 5: Lò Luyện Đan (furnace + elixir buffs)
         this.alchemyModal = null; // System 5: bronze cauldron UI + HUD medallion
         this.beastModal = null;   // System 6: Vườn Linh Thú (Spirit Beast Sanctuary)
+        this.beasts = null;       // System 6: affinity, Linh Ngư bag, LocalStorage
     }
 
     /* ============================ PRELOAD ============================ */
@@ -168,6 +171,9 @@ export default class GardenScene extends Phaser.Scene {
         // Spirit Beast Sanctuary art — same pattern as fishing (manifest-driven)
         const beastAssets = Object.values(BEAST_ASSETS);
         for (const asset of beastAssets) this.load.image(asset.key, asset.path);
+        // Lò Luyện Đan art — Bát Quái Lô + Trúc Cơ / Cửu Chuyển pills
+        const alchemyAssets = Object.values(ALCHEMY_ASSETS);
+        for (const asset of alchemyAssets) this.load.image(asset.key, asset.path);
 
         // Log any 404 failures so missing assets are immediately visible
         // in the browser console instead of silently falling back to canvas.
@@ -177,11 +183,12 @@ export default class GardenScene extends Phaser.Scene {
         this.load.on('complete', () => {
             const fishingKeys = fishingAssets.map((asset) => asset.key);
             const beastKeys = beastAssets.map((asset) => asset.key);
-            const missing = [...assets, ...fishingKeys, ...beastKeys].filter((k) => !this.textures.exists(k));
+            const alchemyKeys = alchemyAssets.map((asset) => asset.key);
+            const missing = [...assets, ...fishingKeys, ...beastKeys, ...alchemyKeys].filter((k) => !this.textures.exists(k));
             if (missing.length) {
                 console.warn(`[GardenScene] Assets missing after preload (fallbacks will be used): ${missing.join(', ')}`);
             } else {
-                console.log(`[GardenScene] All ${assets.length + fishingKeys.length + beastKeys.length} image assets loaded OK (no fallbacks triggered)`);
+                console.log(`[GardenScene] All ${assets.length + fishingKeys.length + beastKeys.length + alchemyKeys.length} image assets loaded OK (no fallbacks triggered)`);
             }
         });
     }
@@ -215,6 +222,10 @@ export default class GardenScene extends Phaser.Scene {
         // the bus; its elixir buffs come back through ELIXIR_CONSUMED.
         this.alchemy = new AlchemyManager().bind(this.bus);
 
+        // System 6 — Vườn Linh Thú: Linh Ngư bag + affinity, persisted locally.
+        this.beasts = new BeastSystem({ bus: this.bus }).bind(this.bus);
+        this.beasts.load();
+
         // Background covers 1080x1920
         this.add.image(W / 2, H / 2, 'bg_manor_isometric').setDisplaySize(W, H).setDepth(D.BG);
 
@@ -237,10 +248,15 @@ export default class GardenScene extends Phaser.Scene {
         this.weatherView = new WeatherView(this, this.weather, this.bus).create();
         this.createWeatherChip();
         this.codexModal = new CodexModal(this, { codex: this.codex, bus: this.bus, audio: this.audio }).create();
-        this.fishingModal = new FishingModal(this, { audio: this.audio }).create();
+        this.fishingModal = new FishingModal(this, { audio: this.audio, bus: this.bus }).create();
         this.createFishingEntryPoint();
         this.alchemyModal = new AlchemyModal(this, { alchemy: this.alchemy, bus: this.bus, audio: this.audio }).create();
-        this.beastModal = new BeastModal(this, { audio: this.audio }).create();
+        this.beastModal = new BeastModal(this, {
+            beasts: this.beasts.getBeasts(),
+            beastSystem: this.beasts,
+            bus: this.bus,
+            audio: this.audio,
+        }).create();
         this.createBeastEntryPoint();
 
         this.createMist();
@@ -280,6 +296,14 @@ export default class GardenScene extends Phaser.Scene {
         // quest, ad) re-syncs the HUD badge + the drawer's owned/afford state.
         b.on(EVENTS.DIAMONDS_CHANGED, (p) => this.onDiamondsChanged(p), { owner: 'garden' });
         b.on(EVENTS.SEED_PURCHASED, () => this.refreshSeedCards(), { owner: 'garden' });
+        // Câu Cá → Nuôi Thú: a landed Linh Ngư is already bagged by BeastSystem;
+        // the scene only narrates it on the hint line.
+        b.on(EVENTS.FISH_CAUGHT, (p) => {
+            this.flashHint(`Câu được ${p.name ?? 'Linh Ngư'} ×${p.amount ?? 1} — mang cho linh thú mà Cho Ăn ✦`);
+        }, { owner: 'garden' });
+        b.on(EVENTS.BEAST_FED, (p) => {
+            this.flashHint(`Cho ăn ${p.beast?.name ?? 'linh thú'} · Thân mật +${p.gained ?? 20} ✦`);
+        }, { owner: 'garden' });
     }
 
     /** HUD reaction to a diamond balance change published by the economy. */
@@ -307,6 +331,7 @@ export default class GardenScene extends Phaser.Scene {
         this.codexModal?.destroy();
         this.weatherView?.destroy();
         this.alchemy?.unbind();
+        this.beasts?.unbind();
         this.economy?.unbind();
         this.codex?.unbind();
         this.weather?.unbind();

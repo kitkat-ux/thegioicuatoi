@@ -621,22 +621,49 @@ for (const [label, modal] of [['Alchemy', scene.alchemyModal], ['Fishing', scene
     const bm = scene.beastModal;
     bm.open();
     await settle(320);
-    check('Beast modal: two tabs rendered (one per beast) at distinct x', bm.tabs.length === 2 && bm.tabs[0].x !== bm.tabs[1].x);
+    check('Beast modal: four tabs rendered (one per beast) at distinct x',
+        bm.tabs.length === 4 && new Set(bm.tabs.map((t) => t.x)).size === 4);
     const visibleCards = () => bm.stageCards.filter((c) => c.visible).length;
     check('Beast modal: only the selected beast is on the stage', visibleCards() === 1 && bm.stageCards[0].visible);
+    check('Beast modal: roster includes Thanh Loan and Huyền Quy',
+        bm.beasts.map((b) => b.name).join('|') === 'Cửu Vĩ Bạch Hồ|Ngọc Thỏ|Thanh Loan|Huyền Quy');
     bm.selectBeast(1);
     await settle(360);
     check('Beast modal: tab switch swaps the stage to Ngọc Thỏ (never stacked)',
         bm.selectedIndex === 1 && bm.stageCards[1].visible && !bm.stageCards[0].visible && bm.beastName.text === 'Ngọc Thỏ');
+    bm.selectBeast(2, { animate: false });
+    check('Beast modal: Thanh Loan shows +15% tốc độ cây lớn',
+        bm.beastName.text === 'Thanh Loan' && (bm.buffsList?.list ?? []).some((n) => /15% tốc độ cây lớn/.test(n.text ?? '')));
+    bm.selectBeast(3, { animate: false });
+    check('Beast modal: Huyền Quy shows +20% tỷ lệ đan dược cao cấp',
+        bm.beastName.text === 'Huyền Quy' && (bm.buffsList?.list ?? []).some((n) => /20% tỷ lệ đan dược/.test(n.text ?? '')));
     bm.step(1);
     await settle(360);
-    check('Beast modal: carousel wraps back to Cửu Vĩ Bạch Hồ', bm.selectedIndex === 0 && bm.beastName.text === 'Cửu Vĩ Bạch Hồ' && visibleCards() === 1);
+    check('Beast modal: carousel wraps from Huyền Quy back to Cửu Vĩ Bạch Hồ',
+        bm.selectedIndex === 0 && bm.beastName.text === 'Cửu Vĩ Bạch Hồ' && visibleCards() === 1);
     check('Beast modal: title/name use light text on the dark panel',
         bm.title.style.color === '#ffe9a8' && bm.beastName.style.color === '#ffe9a8' && bm.subtitle.style.color === '#b9a3dd');
     const ev = fakeEvent();
     bm.tabs[1].list.find((o) => o.type === 'Zone').emit('pointerdown', pointerAt(540, 700), 0, 0, ev);
     await settle(50);
     check('Beast modal: tab tap stops propagation and keeps the modal open', ev.cancelled && bm.isOpen() && bm.selectedIndex === 1);
+    // Câu Cá → Nuôi Thú: 1 Linh Ngư → +20 Thân Mật, persisted
+    {
+        const sys = scene.beasts;
+        sys.grantLinhNgu(1);
+        const fox = sys.getBeast('fox_01');
+        const beforeAff = fox.affinity;
+        const beforeFish = sys.getLinhNgu();
+        bm.selectBeast(0, { animate: false });
+        bm.handleFeed();
+        check('Feed loop: Cho Ăn consumes 1 Linh Ngư', sys.getLinhNgu() === beforeFish - 1);
+        check('Feed loop: Cho Ăn adds +20 Thân Mật', fox.affinity === Math.min(fox.affinityMax, beforeAff + 20));
+        check('Feed loop: BEAST_FED published on the bus', scene.bus.wasEmitted(EV.BEAST_FED));
+        const saved = JSON.parse(scene.beasts.store.read() ? JSON.stringify(scene.beasts.store.read()) : 'null');
+        check('Feed loop: state persisted to LocalStorage/StateStore',
+            !!saved && saved.linhNgu === sys.getLinhNgu()
+            && saved.beasts.find((b) => b.id === 'fox_01').affinity === fox.affinity);
+    }
     bm.close();
     await settle(260);
 }

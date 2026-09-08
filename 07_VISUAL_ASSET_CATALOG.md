@@ -17,7 +17,7 @@ Tài liệu này chuẩn hóa toàn bộ câu lệnh tạo ảnh (Prompt), phong
 ### A. Nhân Vật & Linh Thú (Sprites)
 1. **Tiên Nữ Hoa Giang (`npc_fairy.png`):**
    - *Prompt:* "Full body sprite, Guofeng Xianxia female fairy goddess, ethereal floating flying pose, drifting translucent silk ribbons, lavender and white celestial robes, facing left, soft rim lighting, intricate jade hairpin ornaments, dynamic cloth physics, masterpiece game character sprite --isolated on pure solid black background #000000 --no shadows on ground, no checkerboard, no grid patterns"
-   - *Quy cách:* 512x512 PNG, cắt nền RGBA sạch, anchor (0.5, 0.8), tọa độ: (x: 890, y: 1345).
+   - *Quy cách:* 512x512 PNG, cắt nền RGBA sạch, anchor (0.5, 0.5), tọa độ (hotfix re-anchor): x = 78% chiều rộng camera, y = 64% chiều cao camera (842 × 1229 trên sân khấu 1080×1920).
 
 1b. **Băng Băng Tiên Tử (`npc_frost_fairy.png`):** ✅ ĐÃ TẠO (720x599 RGBA) — NPC riêng của Bí Cảnh `FROST_REALM`.
    - *Prompt:* "High-quality 2D game sprite, Guofeng Xianxia art style, full-body celestial ice fairy (Băng Tuyết Tiên Tử), frosted silver hair with icy jade hairpins, translucent crystalline pale-blue and snow-white flowing hanfu, holding an ice lotus lantern, elegant floating pose, clean cel-shaded guofeng line art --isolated on pure solid black background #000000"

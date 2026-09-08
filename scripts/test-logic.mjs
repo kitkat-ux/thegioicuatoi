@@ -713,5 +713,68 @@ check('quest rows: completion by value (green_thumb at 10 blooms)', (() => {
         && /tickSoilWater\(delta\)/.test(sceneSoil) && /yieldMult: soilYieldMult/.test(sceneSoil) && /hydratePlotData/.test(sceneSoil));
 }
 
+// --- Bí Cảnh (Secret Realms) expedition system ---
+{
+    const {
+        REALMS, REALM_IDS, REALM_ORDER, REALM_SEEDS, REALM_SEED_BY_ID,
+        resolveRealm, getSeedsForRealm, canPlantInRealm,
+        realmHasUniformTile, getUnlockedRealms,
+    } = await import('../src/data/RealmsData.js');
+
+    check('RealmsData: 2 realms defined', Object.keys(REALMS).length === 2);
+    check('RealmsData: REALM_ORDER has 2 entries', REALM_ORDER.length === 2);
+    check('RealmsData: DEFAULT_GARDEN is first in order', REALM_ORDER[0] === 'DEFAULT_GARDEN');
+    check('RealmsData: FROST_REALM is second in order', REALM_ORDER[1] === 'FROST_REALM');
+
+    // Realm definitions
+    check('RealmsData: DEFAULT_GARDEN has correct background key', REALMS.DEFAULT_GARDEN.backgroundKey === 'bg_manor_isometric');
+    check('RealmsData: FROST_REALM has frost background key', REALMS.FROST_REALM.backgroundKey === 'bg_frost_realm');
+    check('RealmsData: FROST_REALM has uniform tile', REALMS.FROST_REALM.tileTextureKey === 'tile_frost_soil');
+    check('RealmsData: DEFAULT_GARDEN has no uniform tile', REALMS.DEFAULT_GARDEN.tileTextureKey === null);
+    check('RealmsData: FROST_REALM has 2 exclusive seeds', REALMS.FROST_REALM.exclusiveSeeds.length === 2);
+    check('RealmsData: DEFAULT_GARDEN has no exclusive seeds', REALMS.DEFAULT_GARDEN.exclusiveSeeds.length === 0);
+
+    // resolveRealm
+    check('RealmsData: resolveRealm returns correct realm', resolveRealm('FROST_REALM').id === 'FROST_REALM');
+    check('RealmsData: resolveRealm falls back to DEFAULT_GARDEN for unknown', resolveRealm('BOGUS').id === 'DEFAULT_GARDEN');
+
+    // realmHasUniformTile
+    check('RealmsData: realmHasUniformTile true for FROST_REALM', realmHasUniformTile('FROST_REALM') === true);
+    check('RealmsData: realmHasUniformTile false for DEFAULT_GARDEN', realmHasUniformTile('DEFAULT_GARDEN') === false);
+
+    // REALM_SEEDS
+    check('RealmsData: 2 realm-exclusive seeds', REALM_SEEDS.length === 2);
+    check('RealmsData: Băng Liên seed exists', !!REALM_SEED_BY_ID['flower_bang_lien']);
+    check('RealmsData: Tuyết Chi seed exists', !!REALM_SEED_BY_ID['flower_tuyet_chi']);
+    check('RealmsData: Băng Liên belongs to FROST_REALM', REALM_SEED_BY_ID['flower_bang_lien'].realmId === 'FROST_REALM');
+
+    // getSeedsForRealm
+    check('RealmsData: DEFAULT_GARDEN returns empty (uses standard catalog)', getSeedsForRealm('DEFAULT_GARDEN').length === 0);
+    check('RealmsData: FROST_REALM returns 2 exclusive seeds', getSeedsForRealm('FROST_REALM').length === 2);
+
+    // canPlantInRealm
+    check('RealmsData: standard seeds plantable in DEFAULT_GARDEN', canPlantInRealm('flower_cyan_orchid', 'DEFAULT_GARDEN') === true);
+    check('RealmsData: standard seeds NOT plantable in FROST_REALM', canPlantInRealm('flower_cyan_orchid', 'FROST_REALM') === false);
+    check('RealmsData: Băng Liên plantable in FROST_REALM', canPlantInRealm('flower_bang_lien', 'FROST_REALM') === true);
+    check('RealmsData: Băng Liên NOT plantable in DEFAULT_GARDEN', canPlantInRealm('flower_bang_lien', 'DEFAULT_GARDEN') === false);
+
+    // getUnlockedRealms
+    const unlocked = getUnlockedRealms();
+    check('RealmsData: both realms unlocked', unlocked.length === 2);
+    check('RealmsData: first unlocked is DEFAULT_GARDEN', unlocked[0].id === 'DEFAULT_GARDEN');
+
+    // Scene wiring (static checks)
+    const sceneRealm = fs.readFileSync(path.resolve('src/scenes/GardenScene.js'), 'utf8');
+    check('Scene: imports RealmsData', /from '\.\.\/data\/RealmsData\.js'/.test(sceneRealm));
+    check('Scene: imports RealmModal', /from '\.\.\/ui\/RealmModal\.js'/.test(sceneRealm));
+    check('Scene: creates RealmModal', /new RealmModal\(/.test(sceneRealm));
+    check('Scene: has switchRealm method', /switchRealm\(realmId\)/.test(sceneRealm));
+    check('Scene: has createRealmEntryPoint', /createRealmEntryPoint\(\)/.test(sceneRealm));
+    check('Scene: persists plots on shutdown', /persistCurrentRealmPlots\(\)/.test(sceneRealm));
+    check('Scene: loads realm plots before grid', /loadRealmPlots\(this\.activeRealmId\)/.test(sceneRealm));
+    check('Scene: uses realm-aware background', /this\.activeRealm\.backgroundKey/.test(sceneRealm));
+    check('Scene: seed drawer uses getDrawerSeeds', /getDrawerSeeds\(\)/.test(sceneRealm));
+}
+
 console.log(fails === 0 ? '\nALL TESTS PASSED' : `\n${fails} TEST(S) FAILED`);
 process.exit(fails === 0 ? 0 : 1);

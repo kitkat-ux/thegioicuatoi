@@ -632,6 +632,21 @@ check('quest rows: completion by value (green_thumb at 10 blooms)', (() => {
     const beast = read3('src/ui/BeastModal.js');
     check('BeastModal: dark Guofeng theme (#121016 + gold frame)', /0x121016/.test(beast) && /lineStyle\(6, T\.gold, 1\)/.test(beast));
     check('BeastModal: beasts shown one at a time (tabs + carousel), never stacked', /makeTab\(/.test(beast) && /step\(delta\)/.test(beast) && /setVisible\(false\)/.test(beast));
+    const beastSys = read3('src/systems/BeastSystem.js');
+    const beastManifest = read3('src/data/BeastAssetManifest.js');
+    check('BeastSystem: four sanctuary beasts (Bạch Hồ, Ngọc Thỏ, Thanh Loan, Huyền Quy)',
+        /Cửu Vĩ Bạch Hồ/.test(beastSys) && /Ngọc Thỏ/.test(beastSys) && /Thanh Loan/.test(beastSys) && /Huyền Quy/.test(beastSys)
+        && /qingluan/.test(beastSys) && /xuanwu/.test(beastSys)
+        && /beast_qingluan/.test(beastManifest) && /beast_xuanwu/.test(beastManifest));
+    check('BeastSystem: Cho Ăn spends 1 Linh Ngư for +20 Thân Mật and persists via StateStore',
+        /feedAffinity: 20/.test(beastSys) && /linhNgu/.test(beastSys) && /class StateStore/.test(beastSys)
+        && /BEAST_FED/.test(beastSys) && /FISH_CAUGHT/.test(beastSys));
+    const alchUi = read3('src/ui/AlchemyModal.js');
+    check('AlchemyModal: bagua furnace + Trúc Cơ / Cửu Chuyển pill sprites',
+        /furnace_bagua/.test(alchUi) && /pill_tier1/.test(alchUi) && /pill_tier3/.test(alchUi)
+        && /Trúc Cơ Đan/.test(alchUi) && /Cửu Chuyển Thần Đan/.test(alchUi));
+    check('Scene wires BeastSystem + fishing catch onto the shared bus',
+        /new BeastSystem\(/.test(scene3) && /FISH_CAUGHT/.test(scene3) && /beastSystem: this\.beasts/.test(scene3));
     const modalInput = read3('src/ui/modalInput.js');
     check('modalInput: stopPropagation is what the shield calls', /stopPropagation\(\)/.test(modalInput));
 }

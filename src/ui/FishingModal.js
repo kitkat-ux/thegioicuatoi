@@ -1,13 +1,13 @@
 /**
  * FishingModal — visual contract for Câu Cá Hồ Tiên.
  *
- * This module intentionally owns presentation only. It does not decide what was
- * caught, mutate inventory, calculate tension, or talk to a fishing system.
- * The reel/cast motion below is a looping art-direction preview that gives the
- * art and UX team a stable surface to wire into later.
+ * Presentation for Câu Cá Hồ Tiên. A successful cast publishes FISH_CAUGHT
+ * (1× Linh Ngư) on the shared bus so BeastSystem can stock the feeding loop
+ * (Câu Cá → Nuôi Thú). Tension math stays out of this widget.
  */
 import { FISHING_ASSET_MANIFEST, FISHING_TEXTURES } from '../data/FishingAssetManifest.js';
 import { LAYERS } from '../core/Layers.js';
+import { EVENTS } from '../systems/EventManager.js';
 import { DIALOG_FONT } from '../systems/DialogSystem.js';
 import { bindBackdropClose, createPanelShield, guarded, localRectToWorld } from './modalInput.js';
 
@@ -36,7 +36,7 @@ const copy = {
     subtitle: 'Bến Nguyệt · Linh khí trên mặt hồ',
     status: 'Mặt hồ tĩnh lặng',
     gauge: 'VÒNG LỰC KÉO',
-    hint: 'Hoạt ảnh minh họa giao diện · chưa kết nối luật câu cá',
+    hint: 'Thả mồi để câu Linh Ngư · mang về Vườn Linh Thú mà Cho Ăn',
 };
 
 const addText = (scene, x, y, value, style = {}) => scene.add.text(x, y, value, {
@@ -47,14 +47,17 @@ const addText = (scene, x, y, value, style = {}) => scene.add.text(x, y, value, 
 export class FishingModal {
     /**
      * @param {Phaser.Scene} scene
-     * @param {{onClose?: () => void, audio?: object}} options
+     * @param {{onClose?: () => void, audio?: object, bus?: object, onCatch?: Function}} options
      */
-    constructor(scene, { onClose = null, audio = null } = {}) {
+    constructor(scene, { onClose = null, audio = null, bus = null, onCatch = null } = {}) {
         if (!scene) throw new TypeError('FishingModal requires a Phaser scene');
         this.scene = scene;
         this.onClose = onClose;
         this.audio = audio;
+        this.bus = bus;
+        this.onCatch = onCatch;
         this.opened = false;
+        this.catching = false;
         this.animationTweens = [];
         this.root = null;
     }
@@ -102,6 +105,7 @@ export class FishingModal {
             fontSize: '21px', color: '#a9f3dc', fontStyle: 'bold',
         }).setOrigin(0.5);
         status.add([statusBg, statusText]);
+        this.statusText = statusText;
 
         const sceneFrame = s.add.graphics();
         sceneFrame.fillStyle(0x0e243a, 1);
@@ -142,7 +146,7 @@ export class FishingModal {
         const castBg = s.add.graphics();
         castBg.fillStyle(0x2c8f84, 0.96).lineStyle(4, 0xbaf5d8, 0.9);
         castBg.fillRoundedRect(-260, -38, 520, 76, 38).strokeRoundedRect(-260, -38, 520, 76, 38);
-        const castText = addText(s, 0, 0, '✦  THẢ MỒI · XEM MINH HỌA  ✦', {
+        const castText = addText(s, 0, 0, '✦  THẢ MỒI · CÂU LINH NGƯ  ✦', {
             fontSize: '25px', color: '#f4ffe1', fontStyle: 'bold',
             stroke: '#164b4e', strokeThickness: 5,
         }).setOrigin(0.5);
@@ -189,9 +193,10 @@ export class FishingModal {
         ]);
     }
 
-    /** A short presentation-only cast; no catch or inventory state is changed. */
+    /** Cast, then land 1 Linh Ngư on the bus (Câu Cá → Nuôi Thú). */
     playCastPreview() {
-        if (!this.opened || !this.parts) return;
+        if (!this.opened || !this.parts || this.catching) return;
+        this.catching = true;
         this.audio?.click?.();
         this.stopMockAnimations();
         const { rod, bobber, gauge, goldFish } = this.parts;
@@ -200,6 +205,7 @@ export class FishingModal {
         bobber.setPosition(660, 820).setAlpha(0.3);
         gauge.setAngle(-11);
         goldFish.setAlpha(0.24);
+        this.statusText?.setText('◉  Đang kéo cá…');
         s.tweens.add({ targets: rod, angle: -4, duration: 360, ease: 'Back.easeOut' });
         s.tweens.add({
             targets: bobber, x: 702, y: 864, alpha: 1, duration: 620, ease: 'Cubic.easeOut',
@@ -209,8 +215,23 @@ export class FishingModal {
         });
         s.tweens.add({
             targets: goldFish, alpha: 0.78, x: 694, duration: 1200, ease: 'Sine.easeInOut',
-            onComplete: () => this.startMockAnimations(),
+            onComplete: () => {
+                this.catching = false;
+                if (!this.opened) return;
+                this.grantCatch();
+                this.startMockAnimations();
+            },
         });
+    }
+
+    /** Publish 1 Linh Ngư so BeastSystem can stock the feeding bag. */
+    grantCatch() {
+        const payload = { itemId: 'linh_ngu', name: 'Linh Ngư', amount: 1, source: 'cast' };
+        this.bus?.emit?.(EVENTS.FISH_CAUGHT, payload);
+        this.onCatch?.(payload);
+        this.statusText?.setText('◉  Câu được Linh Ngư ×1');
+        this.audio?.chime?.(880, { gain: 0.08 });
+        return payload;
     }
 
     open() {

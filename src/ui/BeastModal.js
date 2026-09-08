@@ -14,13 +14,16 @@
  * panel art and the widgets, so a tap inside the modal can never reach the
  * backdrop and auto-close it. Only a tap OUTSIDE the panel closes it.
  *
- * The widget owns presentation only. Beast state is driven externally via
- * props so the modal stays decoupled from GardenScene / EconomySystem.
+ * The widget owns presentation only. Beast state is driven by BeastSystem
+ * (affinity, Linh Ngư bag, LocalStorage). Fishing publishes FISH_CAUGHT on
+ * the bus; feeding consumes 1 Linh Ngư for +20 Thân Mật.
  */
 import Phaser from 'phaser';
 import { LAYERS } from '../core/Layers.js';
+import { EVENTS } from '../systems/EventManager.js';
 import { DIALOG_FONT } from '../systems/DialogSystem.js';
 import { BEAST_ASSETS } from '../data/BeastAssetManifest.js';
+import { BEAST_DEFAULTS, createBeastRuntimeState } from '../systems/BeastSystem.js';
 import { bindBackdropClose, createPanelShield, guarded, localRectToWorld } from './modalInput.js';
 
 const STAGE_W = 1080;
@@ -91,6 +94,7 @@ export class BeastModal {
         scene,
         {
             beasts = DEFAULT_BEASTS,
+            beastSystem = null,
             bus = null,
             audio = null,
             onFeed = () => {},
@@ -99,7 +103,8 @@ export class BeastModal {
     ) {
         if (!scene) throw new TypeError('BeastModal requires a Phaser scene');
         this.scene = scene;
-        this.beasts = beasts;
+        this.beastSystem = beastSystem;
+        this.beasts = beastSystem?.getBeasts?.() ?? beasts;
         this.bus = bus;
         this.audio = audio;
         this.onFeed = onFeed;
@@ -278,8 +283,36 @@ export class BeastModal {
             this.footerHint,
         ]);
 
+        this.bindBus();
         this.selectBeast(0, { animate: false });
         return this;
+    }
+
+    bindBus() {
+        if (!this.bus) return this;
+        this.disposers.push(
+            this.bus.on(EVENTS.FISH_CAUGHT, () => {
+                if (this.opened) this.updateCooldowns();
+            }, { owner: 'beast-modal' }),
+            this.bus.on(EVENTS.BEAST_FED, () => {
+                if (this.opened) this.refreshSelected();
+            }, { owner: 'beast-modal' }),
+            this.bus.on(EVENTS.BEAST_PETTED, () => {
+                if (this.opened) this.refreshSelected();
+            }, { owner: 'beast-modal' }),
+            this.bus.on(EVENTS.BEAST_STATE_CHANGED, () => {
+                if (this.opened) this.refreshSelected();
+            }, { owner: 'beast-modal' }),
+        );
+        return this;
+    }
+
+    refreshSelected() {
+        const beast = this.beasts[this.selectedIndex];
+        if (!beast) return;
+        this.updateAffinityBar(beast);
+        this.refreshBuffs(beast);
+        this.updateCooldowns(beast);
     }
 
     /* ---------- builders ---------- */
@@ -310,9 +343,9 @@ export class BeastModal {
             icon = s.add.image(-tabW / 2 + 38, 0, beast.assetKey);
             fitImage(icon, 44, 44);
         }
-        const label = text(s, icon ? -tabW / 2 + 70 : 0, 0, beast.name, {
-            fontSize: '21px', color: T.textMuted, fontStyle: 'bold',
-            wordWrap: { width: tabW - 90 },
+        const label = text(s, icon ? -tabW / 2 + 68 : 0, 0, beast.shortName || beast.name, {
+            fontSize: n >= 4 ? '17px' : '21px', color: T.textMuted, fontStyle: 'bold',
+            wordWrap: { width: tabW - 86 },
         }).setOrigin(icon ? 0 : 0.5, 0.5);
 
         const hit = s.add.zone(0, 0, tabW, tabH).setInteractive({ useHandCursor: true });
@@ -519,9 +552,14 @@ export class BeastModal {
         const now = Date.now();
         const feedLeft = Math.max(0, FEED_CD - (now - beast.lastFed));
         const petLeft = Math.max(0, PET_CD - (now - beast.lastPet));
-        this.feedCooldown.setText(feedLeft > 0 ? `Chờ ${Math.ceil(feedLeft / 1000)}s` : 'Sẵn sàng ✦');
+        const linhNgu = this.beastSystem ? this.beastSystem.getLinhNgu() : null;
+        const noFish = linhNgu != null && linhNgu < 1;
+        if (feedLeft > 0) this.feedCooldown.setText(`Chờ ${Math.ceil(feedLeft / 1000)}s`);
+        else if (noFish) this.feedCooldown.setText('Thiếu Linh Ngư ✧');
+        else if (linhNgu != null) this.feedCooldown.setText(`Linh Ngư ×${linhNgu} ✦`);
+        else this.feedCooldown.setText('Sẵn sàng ✦');
         this.petCooldown.setText(petLeft > 0 ? `Chờ ${Math.ceil(petLeft / 1000)}s` : 'Sẵn sàng ✦');
-        this.feedBtn.setAlpha(feedLeft > 0 ? 0.55 : 1);
+        this.feedBtn.setAlpha((feedLeft > 0 || noFish) ? 0.55 : 1);
         this.petBtn.setAlpha(petLeft > 0 ? 0.55 : 1);
     }
 
@@ -530,13 +568,22 @@ export class BeastModal {
     handleFeed() {
         const beast = this.beasts[this.selectedIndex];
         if (!beast) return;
-        const now = Date.now();
-        if (now - beast.lastFed < FEED_CD) {
-            this.audio?.click?.(0);
-            return; /* cooldown */
+        if (this.beastSystem) {
+            const result = this.beastSystem.feed(beast.id);
+            if (!result.success) {
+                this.audio?.click?.(0);
+                this.updateCooldowns(beast);
+                return;
+            }
+        } else {
+            const now = Date.now();
+            if (now - beast.lastFed < FEED_CD) {
+                this.audio?.click?.(0);
+                return; /* cooldown */
+            }
+            beast.lastFed = now;
+            beast.affinity = Math.min(beast.affinityMax, beast.affinity + FEED_GAIN);
         }
-        beast.lastFed = now;
-        beast.affinity = Math.min(beast.affinityMax, beast.affinity + 5);
 
         this.audio?.pluck?.(523.25, { gain: 0.1 }); /* C5 */
         this.updateAffinityBar(beast);
@@ -553,13 +600,22 @@ export class BeastModal {
     handlePet() {
         const beast = this.beasts[this.selectedIndex];
         if (!beast) return;
-        const now = Date.now();
-        if (now - beast.lastPet < PET_CD) {
-            this.audio?.click?.(0);
-            return; /* cooldown */
+        if (this.beastSystem) {
+            const result = this.beastSystem.pet(beast.id);
+            if (!result.success) {
+                this.audio?.click?.(0);
+                this.updateCooldowns(beast);
+                return;
+            }
+        } else {
+            const now = Date.now();
+            if (now - beast.lastPet < PET_CD) {
+                this.audio?.click?.(0);
+                return; /* cooldown */
+            }
+            beast.lastPet = now;
+            beast.affinity = Math.min(beast.affinityMax, beast.affinity + 2);
         }
-        beast.lastPet = now;
-        beast.affinity = Math.min(beast.affinityMax, beast.affinity + 2);
 
         this.audio?.pluck?.(659.25, { gain: 0.1 }); /* E5 */
         this.updateAffinityBar(beast);

@@ -87,8 +87,13 @@ class TestGardenScene extends GardenScene {
         make('icon_spirit_stone', 128, 128, '#b26bff');
         make('npc_tien_nu', 256, 384, '#c9dff8');
         make('npc_tien_nu_portrait', 256, 256, '#c9dff8');
+        make('npc_frost_fairy', 256, 384, '#bfe4f8');
+        make('icon_shop', 192, 192, '#dfb15b');
         make('icon_codex_scroll', 192, 192, '#f3e6c6');
         make('bridge_pavilion', 320, 240, '#4a1e20');
+        make('bg_frost_realm', 1080, 1920, '#0a2a3a');
+        make('tile_frost_soil', 108, 64, '#8adfff');
+        make('flower_bang_lien', 256, 256, '#7ff7ff');
     }
 }
 
@@ -174,6 +179,48 @@ check('island platform aligns with the grid center', (() => {
     const tex = scene.textures.get('platform').getSourceImage();
     const expectedY = 1110 + (tex.height / 2 - 270) * 0.82; // diamond center -> (540, 1110)
     return Math.abs(scene.platform.x - 540) < 0.01 && Math.abs(scene.platform.y - expectedY) < 0.01;
+})());
+
+// ---- Realm-specific NPC (Bí Cảnh guardians) ----
+const { REALMS: REALMS_CFG, resolveRealm: resolveRealmCfg } = await import('../src/data/RealmsData.js');
+check('RealmsData: DEFAULT_GARDEN NPC is Tiên Nữ Hoa Giang with the default fairy sprite',
+    REALMS_CFG.DEFAULT_GARDEN.npc.name === 'Tiên Nữ Hoa Giang'
+    && REALMS_CFG.DEFAULT_GARDEN.npc.spriteKey === 'npc_tien_nu');
+check('RealmsData: FROST_REALM NPC is Băng Băng Tiên Tử with npc_frost_fairy.png',
+    REALMS_CFG.FROST_REALM.npc.name === 'Băng Băng Tiên Tử'
+    && REALMS_CFG.FROST_REALM.npc.spriteKey === 'npc_frost_fairy'
+    && REALMS_CFG.FROST_REALM.npc.spritePath === './assets/npc/npc_frost_fairy.png');
+check('NPC sprite + label follow the active realm config', (() => {
+    const cfg = scene.getActiveNpcConfig();
+    return cfg.name === 'Tiên Nữ Hoa Giang'
+        && scene.npcSprite?.texture?.key === 'npc_tien_nu'
+        && scene.npcName?.text === 'Tiên Nữ Hoa Giang'
+        && scene.textures.exists('npc_frost_fairy');
+})());
+check('Frost realm resolves its own guardian (sprite swap contract)',
+    resolveRealmCfg('FROST_REALM').npc.spriteKey === 'npc_frost_fairy'
+    && resolveRealmCfg('FROST_REALM').npc.name === 'Băng Băng Tiên Tử');
+
+// ---- Radiant Celestial Aura (Hào Quang) ----
+check('NPC celestial aura exists with additive blending', !!scene.npcAura && scene.npcAura.blendMode === Phaser.BlendModes.ADD);
+check('NPC aura breathing tween: scale 0.95 → 1.08, alpha 0.5 → 0.85 (yoyo)', (() => {
+    const t = scene.npcAuraTween;
+    if (!t) return false;
+    const sd = t.data?.find?.((d) => d.key === 'scaleX');
+    const ad = t.data?.find?.((d) => d.key === 'alpha');
+    return !!sd && Math.abs(sd.start - 0.95) < 0.01 && Math.abs(sd.end - 1.08) < 0.01
+        && !!ad && Math.abs(ad.start - 0.5) < 0.01 && Math.abs(ad.end - 0.85) < 0.01
+        && sd.yoyo === true && sd.repeat === -1;
+})());
+check('NPC aura + core are parented behind the fairy in npcGroup',
+    scene.npcGroup.list.indexOf(scene.npcAura) < scene.npcGroup.list.indexOf(scene.npcSprite));
+check('Midnight radiance mirror lifts the fairy above the night wash (never darkened)', (() => {
+    scene.syncNpcNightRadiance(1);
+    const ok = !!scene.npcNightGlow
+        && scene.npcNightGlow.depth > LAYERS.AMBIENT
+        && scene.npcNightGlow.blendMode === Phaser.BlendModes.ADD;
+    scene.syncNpcNightRadiance(0);
+    return ok && scene.npcNightGlow === null;
 })());
 
 // ---- Action bar: sleek scale + generous hitboxes + micro-animations ----
@@ -280,9 +327,11 @@ check('rewarded ad grants spirit stones', scene.economy.spiritStones > harvestAl
 check('no runtime errors after ad flow', errors.length === 0);
 
 // ---- Dialog open/close ----
-scene.onNpcClick();
+// (The NPC tap itself now opens the Garden Shop — tested below. The quest
+// dialog opens through the shop greeting route and scene.openDialog().)
+scene.openDialog();
 await new Promise((r) => setTimeout(r, 300));
-check('dialog opens on NPC click', scene.dialogVisible === true);
+check('dialog opens via openDialog', scene.dialogVisible === true);
 
 // ---- Dialog structure: navigate to the quest list (quest_details) ----
 // The greeting variant depends on live quest state; walk toward quest_details.
@@ -320,6 +369,83 @@ check('long quest text stays inside masked body (clipped)', contentBottomWorld -
 scene.closeDialog();
 await new Promise((r) => setTimeout(r, 300));
 check('dialog closes', scene.dialogVisible === false);
+
+/* ==================== CỬA HÀNG HOA VIÊN (Garden Shop) ==================== */
+{
+    const eco = scene.economy;
+    check('Hoa Các HUD button exists on the top HUD', !!scene.shopButton && scene.shopButton.depth === LAYERS.HUD);
+    scene.onNpcClick();
+    await new Promise((r) => setTimeout(r, 350));
+    const shop = scene.shopModal;
+    check('NPC tap opened the shop (not the quest dialog)', !!shop && shop.isOpen() === true && scene.dialogVisible === false);
+    check('Shop overlay is blocked-UI + renders above the ambient wash', scene.uiBlocked() === true && shop.getSnapshot().aboveAmbient === true);
+
+    // Kỳ Hoa Dị Thảo tab: standard seeds of the default garden
+    let snap = shop.getSnapshot();
+    check('Shop opens on the Kỳ Hoa Dị Thảo (seeds) tab with 5 standard seeds',
+        snap.activeTab === 'seeds' && snap.rowCount === 5);
+    check('Shop footer shows live Hòa Hợp + Đá Linh Khí balances',
+        shop.harmonyText.text === `✿ Hòa Hợp: ${eco.harmony}` && shop.stonesText.text === `💎 Đá Linh Khí: ${eco.spiritStones}`);
+
+    // buy with Đá Linh Khí
+    eco.spiritStones = 20;
+    eco.harmony = 30;
+    scene.updateHud();
+    const purpleSeed = { id: 'flower_purple_wisteria' };
+    eco.inventory.flower_purple_wisteria = 0;
+    const stonesBefore = eco.spiritStones;
+    shop.buySeed(purpleSeed, 'stones');
+    await new Promise((r) => setTimeout(r, 120));
+    check('Shop: buying purple with 💎 deducts 5 through the economy',
+        eco.spiritStones === stonesBefore - 5 && eco.getInventoryCount('flower_purple_wisteria') === 1);
+    check('Shop: DIAMONDS_CHANGED published → HUD badge re-synced',
+        scene.stoneValue.text === `💎 ${eco.spiritStones}`);
+
+    // buy with Hòa Hợp
+    const harmonyBefore = eco.harmony;
+    shop.buySeed(purpleSeed, 'harmony');
+    await new Promise((r) => setTimeout(r, 120));
+    check('Shop: buying purple with ✿ deducts 8 Hòa Hợp and stocks the packet',
+        eco.harmony === harmonyBefore - 8 && eco.getInventoryCount('flower_purple_wisteria') === 2);
+
+    // unaffordable → notice + no stock
+    eco.harmony = 0;
+    scene.updateHud();
+    shop.buySeed({ id: 'flower_rare_nguyet_cuc' }, 'harmony');
+    await new Promise((r) => setTimeout(r, 120));
+    check('Shop: unaffordable seed is refused with a notice and no stock change',
+        scene.isNoticeVisible() && eco.getInventoryCount('flower_rare_nguyet_cuc') === 0);
+    scene.hideNotice();
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Tiên Thiên Đổi Báu tab: sell harvested flowers
+    shop.setTab('sell');
+    await new Promise((r) => setTimeout(r, 200));
+    snap = shop.getSnapshot();
+    check('Shop: Tiên Thiên Đổi Báu tab lists the stocked blooms', snap.activeTab === 'sell' && snap.rowCount >= 2);
+    const harmonyBeforeSell = eco.harmony;
+    const stonesBeforeSell = eco.spiritStones;
+    shop.sellSeed(purpleSeed, 1);
+    await new Promise((r) => setTimeout(r, 120));
+    check('Shop: selling 1 purple pays +3 ✿ +1 💎 through the economy',
+        eco.harmony === harmonyBeforeSell + 3 && eco.spiritStones === stonesBeforeSell + 1
+        && eco.getInventoryCount('flower_purple_wisteria') === 1);
+
+    // shop modal pointer contract: shield + guarded backdrop (mobile fix)
+    const fakeEvent = () => ({ cancelled: false, stopPropagation() { this.cancelled = true; } });
+    const pointerAt = (x, y) => ({ x, y, worldX: x, worldY: y });
+    const ev1 = fakeEvent();
+    shop.panelShield.emit('pointerdown', pointerAt(540, 960), 0, 0, ev1);
+    check('Shop: panel shield stops propagation (no backdrop auto-close)', ev1.cancelled === true && shop.isOpen());
+    const rect = shop.getPanelWorldRect();
+    const ev2 = fakeEvent();
+    shop.shade.emit('pointerdown', pointerAt(rect.x + rect.width / 2, rect.y + rect.height / 2), 0, 0, ev2);
+    check('Shop: backdrop tap INSIDE the panel rect never closes it', shop.isOpen() === true && ev2.cancelled === true);
+    const ev3 = fakeEvent();
+    shop.shade.emit('pointerdown', pointerAt(20, 20), 0, 0, ev3);
+    await new Promise((r) => setTimeout(r, 260));
+    check('Shop: backdrop tap OUTSIDE the panel closes it', shop.isOpen() === false && scene.uiBlocked() === false);
+}
 
 // ---- Gesture system ----
 check('gesture system set up', scene.input !== undefined);

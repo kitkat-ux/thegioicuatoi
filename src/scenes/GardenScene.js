@@ -31,6 +31,7 @@ import {
     realmHasUniformTile,
 } from '../data/RealmsData.js';
 import RealmModal from '../ui/RealmModal.js';
+import GardenShopModal from '../ui/GardenShopModal.js';
 
 const W = 1080;
 const H = 1920;
@@ -152,6 +153,7 @@ export default class GardenScene extends Phaser.Scene {
         this.activeRealmId = null; // set in create() from LocalStorage
         this.activeRealm = null;   // resolved realm definition
         this.realmModal = null;    // RealmModal overlay UI
+        this.shopModal = null;     // Cửa Hàng Hoa Viên (Garden Shop) overlay UI
     }
 
     /* ============================ PRELOAD ============================ */
@@ -180,6 +182,17 @@ export default class GardenScene extends Phaser.Scene {
         for (const a of assets) {
             this.load.image(a, `./assets/images/${a}.png`);
         }
+        // Realm guardian NPCs — every realm's sprite is preloaded so swapping
+        // realms swaps the fairy instantly (no 404 → fallback flash). The
+        // DEFAULT_GARDEN fairy is already in the list above via npc_tien_nu.
+        for (const realmId of Object.keys(REALMS)) {
+            const npc = REALMS[realmId].npc;
+            if (npc?.spriteKey && npc.spritePath && !this.textures.exists(npc.spriteKey)) {
+                this.load.image(npc.spriteKey, npc.spritePath);
+            }
+        }
+        // Hoa Các (Garden Shop) — ornate pagoda icon for the HUD button.
+        this.load.image('icon_shop', './assets/ui/icon_shop.png');
         // Fishing art is kept in its own namespace and described by the
         // integration manifest, so the modal and preload can never drift.
         const fishingAssets = Object.values(FISHING_TEXTURES);
@@ -225,11 +238,12 @@ export default class GardenScene extends Phaser.Scene {
             const fishingKeys = fishingAssets.map((asset) => asset.key);
             const beastKeys = beastAssets.map((asset) => asset.key);
             const alchemyKeys = alchemyAssets.map((asset) => asset.key);
-            const missing = [...assets, ...fishingKeys, ...beastKeys, ...alchemyKeys].filter((k) => !this.textures.exists(k));
+            const realmNpcKeys = Object.values(REALMS).map((r) => r.npc?.spriteKey).filter(Boolean);
+            const missing = [...assets, ...realmNpcKeys, 'icon_shop', ...fishingKeys, ...beastKeys, ...alchemyKeys].filter((k) => !this.textures.exists(k));
             if (missing.length) {
                 console.warn(`[GardenScene] Assets missing after preload (fallbacks will be used): ${missing.join(', ')}`);
             } else {
-                console.log(`[GardenScene] All ${assets.length + fishingKeys.length + beastKeys.length + alchemyKeys.length} image assets loaded OK (no fallbacks triggered)`);
+                console.log(`[GardenScene] All ${assets.length + realmNpcKeys.length + 1 + fishingKeys.length + beastKeys.length + alchemyKeys.length} image assets loaded OK (no fallbacks triggered)`);
             }
         });
     }
@@ -358,6 +372,9 @@ export default class GardenScene extends Phaser.Scene {
         // Economy: every Đá Linh Khí movement (purchase, quick-water, harvest,
         // quest, ad) re-syncs the HUD badge + the drawer's owned/afford state.
         b.on(EVENTS.DIAMONDS_CHANGED, (p) => this.onDiamondsChanged(p), { owner: 'garden' });
+        // Hòa Hợp movements (Cửa Hàng purchases/sales, milestone grants) refresh
+        // the harmony badge the same way — one bus fact, one HUD reaction.
+        b.on(EVENTS.CURRENCY_CHANGED, () => this.updateHud(), { owner: 'garden' });
         b.on(EVENTS.SEED_PURCHASED, () => this.refreshSeedCards(), { owner: 'garden' });
         // Câu Cá → Nuôi Thú: a landed Linh Ngư is already bagged by BeastSystem;
         // the scene only narrates it on the hint line.
@@ -483,6 +500,8 @@ export default class GardenScene extends Phaser.Scene {
         if (Math.abs(v - prev) < 0.01) return;
         // island aura + runes brighten after dusk
         this.islandAura?.setAlpha(0.12 + v * 0.26).setTint(v > 0.5 ? 0x9fd8ff : 0x8f7ae0);
+        // the fairy + her Hào Quang stay radiantly lit after dark (never dimmed)
+        this.syncNpcNightRadiance(v);
         // blooms radiate more at night
         for (const tile of this.tiles.flat()) {
             const glow = tile.gridData.bloomGlow;
@@ -693,24 +712,88 @@ export default class GardenScene extends Phaser.Scene {
     }
 
     /* ====================== BRIDGE + NPC ====================== */
+    /**
+     * Config of the active realm's guardian NPC (sprite + label + aura tint).
+     * Falls back to the default garden fairy for realms without an override.
+     */
+    getActiveNpcConfig() {
+        return this.activeRealm?.npc ?? {
+            name: 'Tiên Nữ Hoa Giang',
+            spriteKey: 'npc_tien_nu',
+            title: 'Người trấn giữ cầu kiều · Linh Đảo Phù Vân',
+            auraTint: 0xc9b2ff,
+        };
+    }
+
     createBridgeAndNpc() {
-        // NOTE: bg_manor_isometric already contains the complete scenery
-        // (pavilion, bridge, lake, mountains). Never layer duplicate
+        // NOTE: the active realm's background already contains the complete
+        // scenery (pavilion, bridge, lake, mountains). Never layer duplicate
         // bridge/pavilion patches over it — any overlay at (150-350,700-900)
         // would produce a faux-checkerboard artifact.
 
-        // NPC: Tiên Nữ Hoa Giang — hovering above the bottom-right LOWER bridge
+        // Realm guardian NPC — hovering above the bottom-right LOWER bridge
         // deck (x: 890, y: 1345), body facing left toward the garden grid.
-        // The sprite is the elegant flying fairy with flowing lavender ribbons
-        // (clean 4-channel PNG with true alpha — no faux background).
+        // The sprite + label follow the realm (Tiên Nữ Hoa Giang on the island,
+        // Băng Băng Tiên Tử in the Frost Realm — see RealmsData `npc`).
+        const npc = this.getActiveNpcConfig();
+        const npcTextureKey = this.textures.exists(npc.spriteKey) ? npc.spriteKey : 'npc_tien_nu';
+
         this.npcGroup = this.add.container(NPC_POS.x, NPC_POS.y).setDepth(D.NPC);
-        const npcSprite = this.add.image(0, -44, 'npc_tien_nu')
+        const npcSprite = this.add.image(0, -44, npcTextureKey)
             .setDisplaySize(344, 274);
-        // soft celestial aura
-        const npcGlow = this.add.image(0, -44, 'glow')
-            .setTint(0xc9b2ff).setAlpha(0.25).setScale(2.4, 2.1);
+        this.npcSprite = npcSprite;
+
+        /* ---- Hào Quang — radiant Celestial Aura ----
+           TWO layers, both Phaser.BlendModes.ADD so the halo composites
+           additively (light on top of the scene, never a dark disc):
+           · halo    — the wide soft radial glow behind the fairy
+           · core    — a tighter inner radiance right behind her silhouette
+           Both breathe on a smooth sine yoyo (scale 0.95→1.08, alpha per
+           layer). They are stored on the scene as this.npcAura / this.npcAuraCore
+           and re-tinted per realm (lavender on the island, frost blue in Hàn Cốc).
+
+           NIGHT IMMUNITY: the whole world below LAYERS.AMBIENT is darkened by
+           WeatherView's multiply wash at midnight, but the NPC container rides
+           D.NPC (200)… which is still BELOW 1100. To keep her radiantly lit
+           after dusk the aura layers are mirrored ABOVE the wash while night
+           light is active — see syncNpcNightRadiance(), driven by the lamp
+           level. The sprite itself is bright art with additive halo — it reads
+           self-illuminated against the darkened garden. */
+        const auraTint = npc.auraTint ?? 0xc9b2ff;
+        this.npcAura = this.add.image(0, -44, 'glow')
+            .setBlendMode(Phaser.BlendModes.ADD)
+            .setTint(auraTint)
+            .setAlpha(0.5)
+            .setScale(0.95);
+        this.npcAuraCore = this.add.image(0, -44, 'glow')
+            .setBlendMode(Phaser.BlendModes.ADD)
+            .setTint(0xffffff)
+            .setAlpha(0.28)
+            .setScale(0.42);
+
+        // Breathing halo: scale 0.95 → 1.08, alpha 0.5 → 0.85 (spec)
+        this.npcAuraTween = this.tweens.add({
+            targets: this.npcAura,
+            scale: { from: 0.95, to: 1.08 },
+            alpha: { from: 0.5, to: 0.85 },
+            duration: 2400,
+            yoyo: true,
+            repeat: -1,
+            ease: 'Sine.easeInOut',
+        });
+        // Tighter inner core breathes slightly faster, subtler range
+        this.tweens.add({
+            targets: this.npcAuraCore,
+            scale: { from: 0.38, to: 0.5 },
+            alpha: { from: 0.22, to: 0.4 },
+            duration: 1700,
+            yoyo: true,
+            repeat: -1,
+            ease: 'Sine.easeInOut',
+        });
+
         // name tag
-        const npcName = this.add.text(0, 132, 'Tiên Nữ Hoa Giang', {
+        this.npcName = this.add.text(0, 132, npc.name, {
             fontFamily: DIALOG_FONT, fontSize: '22px', color: '#dce8ff',
             align: 'center', stroke: '#1b1140', strokeThickness: 4,
         }).setOrigin(0.5);
@@ -718,7 +801,7 @@ export default class GardenScene extends Phaser.Scene {
         const npcZone = this.add.zone(0, -20, 400, 360).setInteractive();
         npcZone.on('pointerdown', () => this.onNpcClick());
 
-        this.npcGroup.add([npcGlow, npcSprite, npcName, npcZone]);
+        this.npcGroup.add([this.npcAura, this.npcAuraCore, npcSprite, this.npcName, npcZone]);
 
         // Smooth sinusoidal idle floating: yoyo between -4px and +4px around
         // the deck anchor — she never touches the stone, she hovers.
@@ -726,16 +809,6 @@ export default class GardenScene extends Phaser.Scene {
             targets: this.npcGroup,
             y: { from: NPC_POS.y - NPC_FLOAT_AMP, to: NPC_POS.y + NPC_FLOAT_AMP },
             duration: 1500,
-            yoyo: true,
-            repeat: -1,
-            ease: 'Sine.easeInOut',
-        });
-        // aura pulse
-        this.tweens.add({
-            targets: npcGlow,
-            alpha: { from: 0.16, to: 0.34 },
-            scale: { from: 2.2, to: 2.6 },
-            duration: 2400,
             yoyo: true,
             repeat: -1,
             ease: 'Sine.easeInOut',
@@ -753,27 +826,112 @@ export default class GardenScene extends Phaser.Scene {
             frequency: 460,
             blendMode: Phaser.BlendModes.ADD,
         }).setDepth(D.NPC + 5);
+
+        // Midnight radiance mirror (see syncNpcNightRadiance)
+        this.syncNpcNightRadiance(this.lampLevel ?? 0);
+
+        // Hoa Các entry button on the HUD (also opens via the NPC herself)
+        this.createShopEntryPoint();
+    }
+
+    /**
+     * Keep the fairy + her aura OUT of the night-time darken pass.
+     * WeatherView multiplies everything below LAYERS.AMBIENT (1100) by the
+     * night color, which would crush the aura's additive glow. When the lamp
+     * level rises past dusk we re-add an ADD-blended copy of the halo + a soft
+     * light pool ABOVE the wash (depth AMBIENT + 2), so the NPC keeps shining
+     * like a lantern while the rest of the garden sleeps. At day the mirror
+     * fades out (the world render below is already fully lit).
+     */
+    syncNpcNightRadiance(level = 0) {
+        const v = Phaser.Math.Clamp(level ?? 0, 0, 1);
+        const npc = this.getActiveNpcConfig();
+        if (v <= 0.02) {
+            if (this.npcNightGlow) {
+                this.npcNightGlow.destroy();
+                this.npcNightGlow = null;
+            }
+            return;
+        }
+        if (!this.npcNightGlow) {
+            this.npcNightGlow = this.add.image(NPC_POS.x, NPC_POS.y - 44, 'glow')
+                .setBlendMode(Phaser.BlendModes.ADD)
+                .setDepth(LAYERS.AMBIENT + 2);
+            this.tweens.add({
+                targets: this.npcNightGlow,
+                scale: { from: 1.0, to: 1.12 },
+                alpha: { from: 0.5, to: 0.78 },
+                duration: 2400,
+                yoyo: true,
+                repeat: -1,
+                ease: 'Sine.easeInOut',
+            });
+        }
+        this.npcNightGlow.setPosition(NPC_POS.x, NPC_POS.y - 44);
+        this.npcNightGlow.setTint(npc.auraTint ?? 0xc9b2ff);
+        this.npcNightGlow.setAlpha(0.1 + v * 0.42);
+        this.npcNightGlow.setScale(1.7 + v * 0.5, 1.45 + v * 0.4);
     }
 
     onNpcClick() {
         this.audio.ensure();
         this.audio.chime(880, { gain: 0.06 });
-        // Update dialog state from game state (live economy stats feed the
-        // quest-list progress counters in the dialog body).
-        this.dialog.updateQuestState({
-            hasFirstBloom: this.bloomCount >= 1,
-            totalBlooms: this.economy.stats.totalBlooms,
-            currentBlooms: this.tiles.flat().filter(t => t.gridData.state === STATE.BLOOMING).length,
-            hasRareSeed: (this.selectedSeed?.id === 'flower_rare_nguyet_cuc') ||
-                         this.economy.getInventoryCount('flower_rare_nguyet_cuc') > 0,
-            spiritStones: this.economy.spiritStones,
-            completedQuests: this.economy.completedQuests,
-            maxSimultaneousBlooms: this.economy.stats.maxSimultaneousBlooms,
-            totalStonesEarned: this.economy.stats.totalStonesEarned,
-            rareBlooms: this.economy.stats.rareBlooms,
-            totalHarvests: this.economy.stats.totalHarvests,
+        // Cửa Hàng Hoa Viên: tapping the realm guardian opens her shop modal
+        // (Hoa Các). The quest dialog hub stays reachable from the shop
+        // header's "Nhiệm Vụ" button, so nothing is lost.
+        this.openGardenShop();
+    }
+
+    /* ====================== CỬA HÀNG HOA VIÊN (GARDEN SHOP) ====================== */
+    /** HUD entry point — the "Hoa Các" pagoda button (right column stack:
+     *  codex 322 → alchemy 462 → shop 602, clear of every other widget). */
+    createShopEntryPoint() {
+        const button = this.add.container(958, 602).setDepth(D.HUD);
+        const bg = this.add.graphics();
+        bg.fillStyle(0x1a0f2e, 0.9).lineStyle(2, 0xdfb15b, 0.85);
+        bg.fillRoundedRect(-112, -34, 224, 68, 16).strokeRoundedRect(-112, -34, 224, 68, 16);
+        const iconKey = this.textures.exists('icon_shop') ? 'icon_shop' : 'glow';
+        const icon = this.add.image(-76, 0, iconKey);
+        if (iconKey === 'icon_shop') icon.setDisplaySize(58, 58);
+        else icon.setTint(0xdfb15b).setScale(0.42);
+        const label = this.add.text(-42, -2, 'Hoa Các', {
+            fontFamily: DIALOG_FONT, fontSize: '23px', color: '#ffe9c4', fontStyle: 'bold',
+            stroke: '#3a2410', strokeThickness: 4,
+        }).setOrigin(0, 0.5);
+        const sub = this.add.text(-42, 21, 'Cửa Hàng', {
+            fontFamily: DIALOG_FONT, fontSize: '16px', color: '#d8b98a',
+            stroke: '#3a2410', strokeThickness: 3,
+        }).setOrigin(0, 0.5);
+        const zone = this.add.zone(0, 0, 224, 68).setInteractive({ useHandCursor: true });
+        zone.on('pointerdown', () => {
+            this.audio?.ensure?.();
+            this.openGardenShop();
         });
-        this.openDialog();
+        zone.on('pointerover', () => bg.lineStyle(3, 0xffe3a0, 1).strokeRoundedRect(-112, -34, 224, 68, 16));
+        zone.on('pointerout', () => bg.lineStyle(2, 0xdfb15b, 0.85).strokeRoundedRect(-112, -34, 224, 68, 16));
+        button.add([bg, icon, label, sub, zone]);
+        this.shopButton = button;
+        this.tweens.add({ targets: button, y: { from: 602, to: 598 }, duration: 2300, yoyo: true, repeat: -1, ease: 'Sine.easeInOut', delay: 300 });
+    }
+
+    /** Open the Cửa Hàng Hoa Viên modal (NPC tap + HUD button entry). */
+    openGardenShop(tab = 'seeds') {
+        this.audio?.ensure?.();
+        if (!this.shopModal) {
+            this.shopModal = new GardenShopModal(this, {
+                economy: this.economy,
+                bus: this.bus,
+                audio: this.audio,
+                realm: this.activeRealm,
+                realmId: this.activeRealmId,
+            }).create();
+        }
+        this.shopModal.open(tab);
+    }
+
+    /** Snapshot of the shop modal state (tests + debug). */
+    getShopSnapshot() {
+        return this.shopModal?.getSnapshot?.() ?? null;
     }
 
     /* ============================ DIALOG BOX (KHUNG THOẠI) ============================
@@ -939,6 +1097,22 @@ export default class GardenScene extends Phaser.Scene {
     }
 
     openDialog() {
+        // Refresh the quest state from live game/economy data every time the
+        // khung thoại opens, so the quest-list progress counters are always
+        // current no matter which entry point opened it.
+        this.dialog.updateQuestState({
+            hasFirstBloom: this.bloomCount >= 1,
+            totalBlooms: this.economy.stats.totalBlooms,
+            currentBlooms: this.tiles.flat().filter(t => t.gridData.state === STATE.BLOOMING).length,
+            hasRareSeed: (this.selectedSeed?.id === 'flower_rare_nguyet_cuc') ||
+                         this.economy.getInventoryCount('flower_rare_nguyet_cuc') > 0,
+            spiritStones: this.economy.spiritStones,
+            completedQuests: this.economy.completedQuests,
+            maxSimultaneousBlooms: this.economy.stats.maxSimultaneousBlooms,
+            totalStonesEarned: this.economy.stats.totalStonesEarned,
+            rareBlooms: this.economy.stats.rareBlooms,
+            totalHarvests: this.economy.stats.totalHarvests,
+        });
         const node = this.dialog.startDialogue();
         if (!node) return;
         this.dialogVisible = true;
@@ -1009,6 +1183,11 @@ export default class GardenScene extends Phaser.Scene {
         if (action === 'open_codex') {
             this.closeDialog();
             this.bus.emit(EVENTS.CODEX_OPEN_REQUEST, { from: choice ? 'dialog' : 'node' });
+            return;
+        }
+        if (action === 'open_shop_seeds' || action === 'open_shop_sell') {
+            this.closeDialog();
+            this.openGardenShop(action === 'open_shop_sell' ? 'sell' : 'seeds');
             return;
         }
         if (node) {
@@ -1234,9 +1413,9 @@ export default class GardenScene extends Phaser.Scene {
         return this.tiles[r]?.[c] ?? null;
     }
 
-    /** True when a full-screen overlay (drawer / dialog / codex / alchemy / fishing / beast / realm / ad) is up. */
+    /** True when a full-screen overlay (drawer / dialog / codex / alchemy / fishing / beast / realm / shop / ad) is up. */
     uiBlocked() {
-        return !!(this.drawerOpen || this.dialogVisible || this.adWatching || this.soilModalOpen || this.codexModal?.isOpen() || this.fishingModal?.isOpen() || this.alchemyModal?.isOpen() || this.beastModal?.isOpen() || this.realmModal?.isOpen());
+        return !!(this.drawerOpen || this.dialogVisible || this.adWatching || this.soilModalOpen || this.codexModal?.isOpen() || this.fishingModal?.isOpen() || this.alchemyModal?.isOpen() || this.beastModal?.isOpen() || this.realmModal?.isOpen() || this.shopModal?.isOpen());
     }
 
     /** Open the presentation-only fishing pier UI. */

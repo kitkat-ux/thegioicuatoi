@@ -152,8 +152,12 @@ export default class RealmModal {
         if (s.textures.exists(realm.backgroundKey)) {
             const thumb = s.add.image(thumbX + thumbW / 2, thumbY + thumbH / 2, realm.backgroundKey)
                 .setDisplaySize(thumbW, thumbH);
-            // Clip to rounded area with mask
-            const mask = s.add.graphics();
+            // Clip to rounded area with mask. The mask shape itself must NEVER
+            // join the display list: s.add.graphics() would render the raw
+            // white fill as a solid white rectangle over the card (the
+            // "two white rectangles" bug — one per realm card). Only
+            // s.make.graphics({ add: false }) + createGeometryMask() is safe.
+            const mask = s.make.graphics({ add: false });
             mask.fillStyle(0xffffff);
             mask.fillRoundedRect(thumbX, thumbY, thumbW, thumbH, 14);
             thumb.setMask(mask.createGeometryMask());

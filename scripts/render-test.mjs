@@ -109,8 +109,13 @@ class TestGardenScene extends GardenScene {
         make('icon_spirit_stone', 128, 128, '#b26bff');
         make('npc_tien_nu', 256, 384, '#c9dff8');
         make('npc_tien_nu_portrait', 256, 256, '#c9dff8');
+        make('npc_frost_fairy', 256, 384, '#bfe4f8');
+        make('icon_shop', 192, 192, '#dfb15b');
         make('icon_codex_scroll', 192, 192, '#f3e6c6');
         make('bridge_pavilion', 320, 240, '#4a1e20');
+        make('bg_frost_realm', 1080, 1920, '#0a2a3a');
+        make('tile_frost_soil', 108, 64, '#8adfff');
+        make('flower_bang_lien', 256, 256, '#7ff7ff');
     }
 }
 
@@ -225,7 +230,8 @@ scene.closeModal(false);
 await new Promise((r) => setTimeout(r, 400));
 
 // open dialog -> quest list -> scroll to bottom
-scene.onNpcClick();
+// (the NPC tap itself now opens the Garden Shop — rendered further below)
+scene.openDialog();
 await new Promise((r) => setTimeout(r, 400));
 let guard = 0;
 while (scene.dialog.currentNodeId !== 'quest_details' && guard++ < 4) {
@@ -242,6 +248,23 @@ await new Promise((r) => setTimeout(r, 500));
 saveFrame('render_test_dialog.png');
 scene.closeDialog();
 await new Promise((r) => setTimeout(r, 400));
+
+// Cửa Hàng Hoa Viên — the Garden Shop modal, both tabs
+{
+    scene.economy.harmony = 46;
+    scene.economy.spiritStones = 15;
+    scene.economy.inventory.flower_cyan_orchid = 7;
+    scene.economy.inventory.flower_golden_amber = 3;
+    scene.updateHud();
+    scene.openGardenShop('seeds');
+    await new Promise((r) => setTimeout(r, 500));
+    saveFrame('render_test_shop_seeds.png');
+    scene.shopModal.setTab('sell');
+    await new Promise((r) => setTimeout(r, 400));
+    saveFrame('render_test_shop_sell.png');
+    scene.shopModal.close();
+    await new Promise((r) => setTimeout(r, 400));
+}
 
 console.log('render errors:', errors.length ? errors.join('\n') : '(none)');
 game.destroy(true);
@@ -298,6 +321,55 @@ rcheck('island shadow darkens the water beneath (~0.45 alpha)', withShadow < noS
     rcheck('Day frame is not veiled by a stray overlay', whole > 26 && whole < 90, `mean luminance=${whole.toFixed(1)}`);
 }
 
+// 1b-fix) REGRESSION: the RealmModal thumbnail masks used to leak two solid
+// WHITE rectangles onto the display list — one per realm card, at
+// (140,550)-(320,790) and (140,850)-(320,1090). Those exact pixels must
+// never be near-white in the plain garden frame again.
+{
+    let white = 0;
+    for (const [y0, y1] of [[555, 785], [855, 1085]]) {
+        for (let y = y0; y <= y1; y += 3) for (let x = 145; x <= 315; x += 3) {
+            const [r, g, b] = px(x, y);
+            if (r > 240 && g > 240 && b > 240) white++;
+        }
+    }
+    rcheck('No stray white rectangles leak at the realm-card slots (RealmModal mask fix)',
+        white === 0, `${white} white px`);
+}
+
+// 1b-shop) Cửa Hàng Hoa Viên: dark Guofeng panel + gold filigree + tabs + rows.
+{
+    const [seedFrame, sellFrame] = await Promise.all([
+        sharpMod('scripts/shots/render_test_shop_seeds.png').raw().toBuffer({ resolveWithObject: true }),
+        sharpMod('scripts/shots/render_test_shop_sell.png').raw().toBuffer({ resolveWithObject: true }),
+    ]);
+    const spx = (b, x, y) => { const i = (y * b.info.width + x) * b.info.channels; return [b.data[i], b.data[i + 1], b.data[i + 2]]; };
+    const slum = (b, x, y) => { const [r, g, bl] = spx(b, x, y); return 0.299 * r + 0.587 * g + 0.114 * bl; };
+    const sMean = (b, x0, x1, y0, y1) => {
+        let n = 0, sum = 0;
+        for (let y = y0; y <= y1; y += 2) for (let x = x0; x <= x1; x += 2) { sum += slum(b, x, y); n++; }
+        return sum / n;
+    };
+    const sBright = (b, x0, x1, y0, y1, threshold = 150) => {
+        let n = 0;
+        for (let y = y0; y <= y1; y += 2) for (let x = x0; x <= x1; x += 2) { if (slum(b, x, y) > threshold) n++; }
+        return n;
+    };
+    // panel left border renders gold at (70, 920) (PANEL_X=70, panel centre y)
+    const [br, bg_, bb] = spx(seedFrame, 70, 920);
+    rcheck('Shop panel draws the gold filigree border', br > 120 && bg_ > 80 && br > bb, `rgb(${br},${bg_},${bb})`);
+    // header title "HOA CÁC" renders bright around (560, 323)
+    rcheck('Shop header greeting renders', sBright(seedFrame, 400, 720, 300, 345) > 12, '');
+    // tab row: both tab labels lit around y=511
+    rcheck('Shop tabs (Kỳ Hoa Dị Thảo / Tiên Thiên Đổi Báu) render', sMean(seedFrame, 160, 920, 490, 535) > 26, '');
+    // seed rows: lit content inside the masked body
+    rcheck('Shop seeds tab lists seed rows', sMean(seedFrame, 150, 930, 620, 1400) > 24, '');
+    // sell tab: the stocked blooms (cyan ×7, golden ×3) list with Đổi buttons
+    rcheck('Shop sell tab lists the stocked blooms + exchange buttons', sMean(sellFrame, 150, 930, 620, 1400) > 24, '');
+    // footer balances rendered
+    rcheck('Shop footer shows Hòa Hợp + Đá Linh Khí balances', sMean(seedFrame, 120, 960, 1470, 1510) > 24, '');
+}
+
 // 1c) ambient wash layering: world re-tinted, HUD pixels untouched.
 //     Both frames are the same instant with only the wash toggled, so any
 //     difference must come from an object rendered below LAYERS.AMBIENT.
@@ -336,6 +408,26 @@ rcheck('island shadow darkens the water beneath (~0.45 alpha)', withShadow < noS
         if (at(rain, x, y) > at(off, x, y) + 14) drops++;
     }
     rcheck('Rain streaks render over the garden (emitter visible)', drops > 400, `${drops} brightened px`);
+
+    // the fairy + her Hào Quang stay radiant at midnight (excluded from the
+    // night darken wash — the additive mirror above LAYERS.AMBIENT): her
+    // region must outshine both the dimmed garden around her and her own
+    // daylight reading.
+    const daySharp = await sharpMod('scripts/shots/render_test_garden.png').raw().toBuffer({ resolveWithObject: true });
+    const dayAt = (x, y) => { const i = (y * daySharp.info.width + x) * daySharp.info.channels; return 0.299 * daySharp.data[i] + 0.587 * daySharp.data[i + 1] + 0.114 * daySharp.data[i + 2]; };
+    const onMean = (x0, x1, y0, y1) => {
+        let s = 0, n = 0;
+        for (let y = y0; y <= y1; y += 3) for (let x = x0; x <= x1; x += 3) { s += at(on, x, y); n++; }
+        return s / n;
+    };
+    const npcNight = onMean(830, 950, 1250, 1360);
+    const gardenNight = onMean(240, 840, 980, 1420);
+    let npcDay = 0, dn = 0;
+    for (let y = 1250; y <= 1360; y += 3) for (let x = 830; x <= 950; x += 3) { npcDay += dayAt(x, y); dn++; }
+    npcDay /= dn;
+    rcheck('NPC + Celestial Aura stay radiant at midnight (excluded from the night wash)',
+        npcNight > gardenNight + 6 && npcNight >= npcDay - 2,
+        `npc night ${npcNight.toFixed(1)} vs garden ${gardenNight.toFixed(1)} vs day ${npcDay.toFixed(1)}`);
 }
 
 // 1d) the codex scroll renders a readable sheet, clipped to the panel — all

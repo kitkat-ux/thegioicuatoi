@@ -763,6 +763,15 @@ check('quest rows: completion by value (green_thumb at 10 blooms)', (() => {
     check('RealmsData: both realms unlocked', unlocked.length === 2);
     check('RealmsData: first unlocked is DEFAULT_GARDEN', unlocked[0].id === 'DEFAULT_GARDEN');
 
+    // Realm-specific NPC guardians (Task: realm NPCs + radiant aura)
+    check('RealmsData: DEFAULT_GARDEN NPC is Tiên Nữ Hoa Giang', REALMS.DEFAULT_GARDEN.npc?.name === 'Tiên Nữ Hoa Giang');
+    check('RealmsData: DEFAULT_GARDEN NPC sprite is the default fairy', REALMS.DEFAULT_GARDEN.npc?.spriteKey === 'npc_tien_nu');
+    check('RealmsData: FROST_REALM NPC is Băng Băng Tiên Tử', REALMS.FROST_REALM.npc?.name === 'Băng Băng Tiên Tử');
+    check('RealmsData: FROST_REALM NPC sprite is npc_frost_fairy.png', REALMS.FROST_REALM.npc?.spriteKey === 'npc_frost_fairy'
+        && REALMS.FROST_REALM.npc?.spritePath === './assets/npc/npc_frost_fairy.png');
+    check('RealmsData: every realm defines an aura tint for its guardian',
+        Object.values(REALMS).every((r) => Number.isInteger(r.npc?.auraTint)));
+
     // Scene wiring (static checks)
     const sceneRealm = fs.readFileSync(path.resolve('src/scenes/GardenScene.js'), 'utf8');
     check('Scene: imports RealmsData', /from '\.\.\/data\/RealmsData\.js'/.test(sceneRealm));
@@ -774,6 +783,74 @@ check('quest rows: completion by value (green_thumb at 10 blooms)', (() => {
     check('Scene: loads realm plots before grid', /loadRealmPlots\(this\.activeRealmId\)/.test(sceneRealm));
     check('Scene: uses realm-aware background', /this\.activeRealm\.backgroundKey/.test(sceneRealm));
     check('Scene: seed drawer uses getDrawerSeeds', /getDrawerSeeds\(\)/.test(sceneRealm));
+    // Realm NPC swap + radiant Celestial Aura (Hào Quang)
+    check('Scene: reads the realm NPC config (getActiveNpcConfig)', /getActiveNpcConfig\(\)/.test(sceneRealm));
+    check('Scene: swaps the NPC sprite from the realm config', /npcTextureKey = this\.textures\.exists\(npc\.spriteKey\) \? npc\.spriteKey : 'npc_tien_nu'/.test(sceneRealm));
+    check('Scene: labels the NPC with the realm name', /this\.npcName = this\.add\.text\(0, 132, npc\.name/.test(sceneRealm));
+    check('Scene: celestial aura uses additive blending (BlendModes.ADD)', /npcAura[\s\S]{0,220}BlendModes\.ADD/.test(sceneRealm));
+    check('Scene: aura breathes (scale 0.95 → 1.08, alpha 0.5 → 0.85)', /scale: \{ from: 0\.95, to: 1\.08 \}/.test(sceneRealm) && /alpha: \{ from: 0\.5, to: 0\.85 \}/.test(sceneRealm));
+    check('Scene: NPC keeps a midnight radiance mirror above the ambient wash', /syncNpcNightRadiance/.test(sceneRealm) && /LAYERS\.AMBIENT \+ 2/.test(sceneRealm));
+    check('Scene: realm NPC sprite is preloaded for every realm', /REALMS\[realmId\]\.npc[\s\S]{0,160}load\.image\(npc\.spriteKey, npc\.spritePath\)/.test(sceneRealm));
+}
+
+// --- Cửa Hàng Hoa Viên (Garden Shop) ---
+{
+    // Dialogue route into the shop
+    check('Dialog: shop_greeting node exists with the NPC greeting', typeof NPC_DIALOGUE.shop_greeting?.text === 'string'
+        && NPC_DIALOGUE.shop_greeting.text.includes('Tiên hữu ghé thăm Hoa Các, cần tìm bảo giống gì?'));
+    check('Dialog: shop_greeting offers both tabs via actions',
+        NPC_DIALOGUE.shop_greeting.choices.some((c) => c.action === 'open_shop_seeds')
+        && NPC_DIALOGUE.shop_greeting.choices.some((c) => c.action === 'open_shop_sell'));
+    check('Dialog: greeting_default routes to Hoa Các', NPC_DIALOGUE.greeting_default.choices.some((c) => c.next === 'shop_greeting'));
+    check('Dialog: every greeting_default choice has a target node', NPC_DIALOGUE.greeting_default.choices.every((c) => !!NPC_DIALOGUE[c.next]));
+
+    // Shop UI module + scene entry points (static)
+    const shopSrc = fs.readFileSync(path.resolve('src/ui/GardenShopModal.js'), 'utf8');
+    check('Shop: modal module exists with both tabs', /Kỳ Hoa Dị Thảo/.test(shopSrc) && /Tiên Thiên Đổi Báu/.test(shopSrc));
+    check('Shop: modal uses the dark Guofeng panel (#121016) + gold border', /0x121016/.test(shopSrc) && /0xdfb15b/.test(shopSrc));
+    check('Shop: modal stops pointer propagation (shield + guarded)', /createPanelShield/.test(shopSrc) && /guarded\(/.test(shopSrc) && /bindBackdropClose/.test(shopSrc));
+    const sceneShop = fs.readFileSync(path.resolve('src/scenes/GardenScene.js'), 'utf8');
+    check('Scene: NPC tap + HUD button both open the Garden Shop', /onNpcClick\(\)[\s\S]{0,400}openGardenShop\(\)/.test(sceneShop) && /createShopEntryPoint\(\)/.test(sceneShop));
+    check('Scene: registers GardenShopModal and blocks UI while open', /new GardenShopModal\(/.test(sceneShop) && /shopModal\?\.isOpen\(\)/.test(sceneShop));
+
+    // Shop economy (live)
+    const eco = new EconomySystem();
+    eco.init();
+    check('Shop economy: purple seed has a Hòa Hợp price', eco.getSeedHarmonyPrice('flower_purple_wisteria') === 8);
+    check('Shop economy: Băng Liên has a Hòa Hợp price (realm exclusive)', eco.getSeedHarmonyPrice('flower_bang_lien') === 12);
+    check('Shop economy: sell table pays purple 3✿ +1💎', JSON.stringify(eco.getSeedSellValue('flower_purple_wisteria')) === JSON.stringify({ harmony: 3, stones: 1 }));
+
+    const bought = eco.purchaseSeedWithHarmony('flower_purple_wisteria');
+    check('Shop economy: fresh economy (0✿) cannot afford the 8✿ seed', bought.success === false && eco.getInventoryCount('flower_purple_wisteria') === 0);
+    {
+        const e2 = new EconomySystem();
+        e2.init();
+        e2.harmony = 30;
+        const r = e2.purchaseSeedWithHarmony('flower_purple_wisteria');
+        check('Shop economy: harmony purchase costs 8✿ and stocks the packet', r.success === true && e2.harmony === 22 && e2.getInventoryCount('flower_purple_wisteria') === 1);
+    }
+    {
+        // sell flow round trip: stock → sell → currencies in
+        const e4 = new EconomySystem();
+        e4.init();
+        e4.inventory.flower_golden_amber = 3;
+        const s1 = e4.sellFlower('flower_golden_amber', 1);
+        check('Shop economy: selling 1 golden amber pays +5✿ +1💎', s1.success === true && s1.harmony === 5 && s1.spiritStones === 1 && e4.getInventoryCount('flower_golden_amber') === 2);
+        const s2 = e4.sellFlower('flower_golden_amber', Infinity);
+        check('Shop economy: selling the rest pays the full batch', s2.sold === 2 && s2.harmony === 10 && s2.spiritStones === 2 && e4.getInventoryCount('flower_golden_amber') === 0);
+        const s3 = e4.sellFlower('flower_golden_amber', 1);
+        check('Shop economy: selling with an empty bag is refused', s3.success === false && s3.sold === 0);
+        const h = e4.spendHarmony(e4.harmony, 'test');
+        check('Shop economy: spendHarmony drains the balance exactly', h.success === true && e4.harmony === 0);
+    }
+    {
+        // grantSeed: the realm-seed purchase path credits the inventory + bus
+        const e5 = new EconomySystem().bind({ emit: (name, payload) => { e5._last = { name, payload }; } });
+        e5.init();
+        e5.grantSeed('flower_bang_lien');
+        check('Shop economy: grantSeed stocks a realm seed and announces it',
+            e5.getInventoryCount('flower_bang_lien') === 1 && e5._last.name === 'economy:seed-purchased');
+    }
 }
 
 console.log(fails === 0 ? '\nALL TESTS PASSED' : `\n${fails} TEST(S) FAILED`);

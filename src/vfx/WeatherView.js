@@ -235,6 +235,10 @@ export class WeatherView {
             this.lampLevel = this.lampTarget;
             this.applyWash();
             this.applyMoon();
+            // an instant sync must still announce the lamp level once, so
+            // listeners (stone lanterns, the NPC's Hào Quang night mirror)
+            // are consistent with the snapped sky instead of lagging a beat
+            this.publishLamp();
         }
         return this;
     }

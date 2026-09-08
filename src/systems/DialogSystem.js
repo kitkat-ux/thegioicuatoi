@@ -47,7 +47,7 @@ export const NPC_DIALOGUE = {
         text: 'Chào ngươi, người chăm sóc hoa viên. Ta là Tiên Nữ Hoa Giang, người trấn giữ cây cầu kiều này. Hoa viên hôm nay thật yên bình... ✿',
         choices: [
             { text: 'Tiên Nữ có nhiệm vụ gì cho ta?', next: 'quest_offer' },
-            { text: 'Ta muốn nghe về hoa viên.', next: 'lore_garden' },
+            { text: 'Ghé thăm Hoa Các (Cửa Hàng).', next: 'shop_greeting' },
             { text: 'Chỉ ta xem Vạn Hoa Đồ Giám.', next: 'explain_codex' },
             { text: 'Tạm biệt.', next: 'farewell' },
         ],
@@ -68,6 +68,18 @@ export const NPC_DIALOGUE = {
         choices: [
             { text: 'Mở Trục Thư ngay ✦', next: 'farewell', action: 'open_codex' },
             { text: 'Để sau, ta trồng hoa đã.', next: 'farewell' },
+        ],
+    },
+
+    /* ---- Cửa Hàng Hoa Viên (Garden Shop) ---- */
+
+    shop_greeting: {
+        id: 'shop_greeting',
+        text: 'Tiên hữu ghé thăm Hoa Các, cần tìm bảo giống gì? Tiểu đảo gom đủ mọi linh chủ quý hiếm — hoặc đổi hoa ngươi thu hoạch lấy Đá Linh Khí.',
+        choices: [
+            { text: 'Mua hạt giống · Kỳ Hoa Dị Thảo', next: 'farewell', action: 'open_shop_seeds' },
+            { text: 'Bán hoa đổi báu · Tiên Thiên Đổi Báu', next: 'farewell', action: 'open_shop_sell' },
+            { text: 'Ta chỉ ghé ngang thôi.', next: 'farewell' },
         ],
     },
 

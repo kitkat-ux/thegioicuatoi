@@ -29,6 +29,7 @@ export const LAYERS = {
     DIALOG: 1400,
     MODAL: 1500,
     REALM: 1525, // Bí Cảnh (Secret Realms) portal selector overlay
+    SHOP: 1540, // Cửa Hàng Hoa Viên (Garden Shop) modal
     CODEX: 1550,
     FISHING: 1575, // fishing pier modal and its presentation-only mock motion
     BEAST: 1580, // spirit beast sanctuary modal (Vườn Linh Thú)

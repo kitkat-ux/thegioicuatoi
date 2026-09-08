@@ -19,6 +19,13 @@ Tài liệu này chuẩn hóa toàn bộ câu lệnh tạo ảnh (Prompt), phong
    - *Prompt:* "Full body sprite, Guofeng Xianxia female fairy goddess, ethereal floating flying pose, drifting translucent silk ribbons, lavender and white celestial robes, facing left, soft rim lighting, intricate jade hairpin ornaments, dynamic cloth physics, masterpiece game character sprite --isolated on pure solid black background #000000 --no shadows on ground, no checkerboard, no grid patterns"
    - *Quy cách:* 512x512 PNG, cắt nền RGBA sạch, anchor (0.5, 0.8), tọa độ: (x: 890, y: 1345).
 
+1b. **Băng Băng Tiên Tử (`npc_frost_fairy.png`):** ✅ ĐÃ TẠO (720x599 RGBA) — NPC riêng của Bí Cảnh `FROST_REALM`.
+   - *Prompt:* "High-quality 2D game sprite, Guofeng Xianxia art style, full-body celestial ice fairy (Băng Tuyết Tiên Tử), frosted silver hair with icy jade hairpins, translucent crystalline pale-blue and snow-white flowing hanfu, holding an ice lotus lantern, elegant floating pose, clean cel-shaded guofeng line art --isolated on pure solid black background #000000"
+   - *Hậu kỳ:* raw `raw_assets/npc_frost_fairy_black.png` → `npm run assets:frost` (`scripts/key-frost-assets.mjs`,
+     edge-connected black-key: chỉ nền đen NỐI BIÊN bị bóa, nét đen bên trong nhân vật giữ nguyên) →
+     trim → 720px → `public/assets/npc/npc_frost_fairy.png`. Sprite + tên NPC đổi theo realm qua
+     `REALMS[...].npc` (xem `src/data/RealmsData.js`).
+
 2. **Linh Thú Mộng Điệp (`sprite_mong_diep.png`):**
    - *Prompt:* "Cyan and jade glowing spiritual butterfly, translucent wings with glowing celestial dust particles, fantasy creature sprite --isolated on pure solid black background #000000"
    - *Quy cách:* 128x128 PNG, RGBA, idle tween vỗ cánh và lượn quanh vườn.
@@ -41,6 +48,10 @@ Tài liệu này chuẩn hóa toàn bộ câu lệnh tạo ảnh (Prompt), phong
 4. **Nút Vạn Hoa Đồ Giám (`icon_codex_scroll.png`):** ✅ ĐÃ TẠO (192x174 RGBA, 81KB)
    - *Prompt:* "Unrolled ancient guofeng rice-paper scroll with carved jade rollers, wisteria sprig and ink poem columns on the sheet, mobile game icon --isolated on pure solid black background #000000"
    - *Hậu kỳ:* raw `raw_assets/icon_codex_scroll_black.png` (1254px) → `makeBlackKeySprite` (keyLo 40 / keyHi 150) → trim → 192px → `public/assets/images/icon_codex_scroll.png`. Lặp qua `npm run assets:process` (task đã khai báo trong `scripts/process-assets.mjs`).
+
+5. **Nút Hoa Các (`icon_shop.png`):** ✅ ĐÃ TẠO (172x192 RGBA) — HUD "Hoa Các" mở Cửa Hàng Hoa Viên (`src/ui/GardenShopModal.js`).
+   - *Prompt:* "Ornate Guofeng golden pagoda treasury / celestial merchant pavilion, tiered curved jade-tiled roofs, gold filigree trim, hanging lantern, glowing seed pouch, soft warm golden glow, mobile game icon --isolated on pure solid black background #000000"
+   - *Hậu kỳ:* raw `raw_assets/icon_shop_black.png` → `npm run assets:frost` (edge-connected black-key) → trim → 192px → `public/assets/ui/icon_shop.png`.
 
 ---
 

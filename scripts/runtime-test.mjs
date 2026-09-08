@@ -387,7 +387,7 @@ check('dialog closes', scene.dialogVisible === false);
 {
     const eco = scene.economy;
     // HUD chrome (currencies, side buttons, action bar) sits at hotfix depth 2500
-    check('Hoa Các HUD button exists on the top HUD', !!scene.shopButton && scene.shopButton.depth === 2500);
+    check('Hoa Các HUD button exists on the top HUD', !!scene.shopButton && scene.shopButton.depth === 2000);
     // NPC tap opens the realm dialog first (two-step: dialog → "Ghé Thăm Hoa Các")
     scene.onNpcClick();
     await new Promise((r) => setTimeout(r, 350));
@@ -578,11 +578,20 @@ check('Codex toast renders inside the sheet (never over the title)', (() => {
 })());
 
 // Regression guard: an overlay dim left on the display list (instead of inside
-// its container) veils and swallows input over the whole garden.
-check('Codex dim is parented to the overlay, not the display list', (() => {
+// its container) veils and swallows input over the whole garden. Under the
+// modal depth contract the blocker is now a TOP-LEVEL scene object at 9000:
+// it must sit above every HUD button (2000) and below the window (9500),
+// start hidden, and never leak onto the stage while the scroll is closed.
+check('Codex blocker sits at the 9000 modal tier (hidden while closed)', (() => {
     const dim = scene.codexModal.dim;
-    return !!dim && dim.parentContainer === scene.codexModal.root
-        && dim.width >= 1080 && dim.height >= 1920 && dim.fillAlpha > 0.6 && !!dim.input;
+    return !!dim && !dim.parentContainer && dim.depth === LAYERS.MODAL_BLOCKER
+        && dim.width >= 1080 && dim.height >= 1920 && dim.fillAlpha > 0.6 && !!dim.input
+        && dim.visible === false;
+})());
+check('Codex window sits at the 9500 modal tier, close button at 9999', (() => {
+    const m = scene.codexModal;
+    return m.root.depth === LAYERS.MODAL_WINDOW && !m.root.visible
+        && m.closeBtn.depth === LAYERS.MODAL_CLOSE && !m.closeBtn.visible;
 })());
 check('No stray full-screen dim on the display list while overlays are closed', (() => {
     const stray = scene.children.list.filter((o) => o.visible !== false
@@ -752,8 +761,11 @@ for (const [label, modal] of [['Alchemy', scene.alchemyModal], ['Fishing', scene
     const rect = modal.getPanelWorldRect();
     const inside = pointerAt(rect.x + rect.width / 2, rect.y + rect.height / 2);
     const outside = pointerAt(20, 20);
-    check(`${label} modal: dim is parented to the overlay + panel shield present`,
-        modal.dim?.parentContainer === modal.root && !!modal.panelShield?.input && modal.panelShield.parentContainer === modal.root);
+    check(`${label} modal: blocker 9000 / window 9500 / close 9999 + panel shield present`,
+        modal.dim && !modal.dim.parentContainer && modal.dim.depth === LAYERS.MODAL_BLOCKER && !!modal.dim.input
+        && modal.root.depth === LAYERS.MODAL_WINDOW
+        && modal.closeButton && !modal.closeButton.parentContainer && modal.closeButton.depth === LAYERS.MODAL_CLOSE
+        && !!modal.panelShield?.input && modal.panelShield.parentContainer === modal.root);
     const ev1 = fakeEvent();
     modal.panelShield.emit('pointerdown', inside, 0, 0, ev1);
     check(`${label} modal: panel shield calls event.stopPropagation()`, ev1.cancelled === true && modal.isOpen());
@@ -929,6 +941,53 @@ for (const [label, modal] of [['Alchemy', scene.alchemyModal], ['Fishing', scene
         scene.stoneValue.text === `💎 ${eco.spiritStones}` && diamondSpends.some((p) => p.reason === 'quick-water' && p.delta === -cost));
     check('Quick-water: rewarded ad still credits diamonds through the economy',
         scene.bus.listenerCount(EV.DIAMONDS_CHANGED) > 0);
+}
+
+// -- 5. MODAL DEPTH CONTRACT: HUD 2000 sits strictly below every modal tier --
+{
+    const hudButtons = {
+        shop: scene.shopButton,
+        realm: scene.realmButton,
+        beast: scene.beastButton,
+        fishing: scene.fishingButton,
+        alchemy: scene.alchemyModal?.button,
+        codex: scene.codexModal?.button,
+    };
+    check('Every game HUD entry button sits at depth 2000 (below all modal tiers)',
+        Object.values(hudButtons).every((b) => !!b && b.depth === 2000));
+
+    // Realm modal: three-tier depth + mobile drag scrolling across all 5 realms
+    const rm = scene.realmModal;
+    rm.open();
+    await settle(340);
+    check('Realm modal: blocker 9000 / window 9500 / close 9999',
+        !!rm.shade && !rm.shade.parentContainer && rm.shade.depth === LAYERS.MODAL_BLOCKER && !!rm.shade.input
+        && rm.container.depth === LAYERS.MODAL_WINDOW
+        && !!rm.closeButton && !rm.closeButton.parentContainer && rm.closeButton.depth === LAYERS.MODAL_CLOSE);
+    check('Realm modal: all 5 realm cards rendered', rm.realmCards.length === 5);
+    check('Realm modal: card list overflows → drag scrolling enabled', rm.scrollMax > 0);
+    // HUD punch-through guard: while the realm modal is up, HUD buttons are inert
+    const zonesWhileOpen = scene.collectHudZones(scene.shopButton).every((z) => z.input && z.input.enabled === false);
+    check('HUD buttons are disabled while a modal is open (punch-through guard)',
+        scene.modalOverlayOpen() === true && zonesWhileOpen === true);
+    // mobile drag: pointerdown inside the list → pointermove pans → release
+    scene.input.emit('pointerdown', { x: 540, y: 1200, worldX: 540, worldY: 1200 });
+    scene.input.emit('pointermove', { x: 540, y: 900, worldX: 540, worldY: 900 });
+    await settle(40);
+    const scrolled = rm.scroll > 0;
+    scene.input.emit('pointermove', { x: 540, y: -5000, worldX: 540, worldY: -5000 });
+    await settle(40);
+    const clampedTop = rm.scroll === rm.scrollMax;
+    scene.input.emit('pointerup', {});
+    rm.setScroll(-9999);
+    check('Realm modal: vertical drag scrolls the list and clamps to bounds',
+        scrolled === true && clampedTop === true && rm.scroll === 0);
+    rm.close();
+    await settle(340);
+    check('Realm modal closes (blocker + window + close all hidden)',
+        rm.isOpen() === false && rm.shade.visible === false && rm.container.visible === false && rm.closeButton.visible === false);
+    const zonesAfterClose = scene.collectHudZones(scene.shopButton).every((z) => z.input && z.input.enabled !== false);
+    check('HUD buttons re-enabled once the modal closes', zonesAfterClose === true);
 }
 
 // -- 4b. HUD safe area --

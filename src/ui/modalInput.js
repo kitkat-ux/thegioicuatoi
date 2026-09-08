@@ -20,6 +20,7 @@
  * Phaser passes the propagation container as the 4th argument of every
  * GameObject pointer event: `(pointer, localX, localY, event)`.
  */
+import { LAYERS } from '../core/Layers.js';
 
 /** Swallow a Phaser pointer event so nothing beneath (e.g. the backdrop) sees it. */
 export function swallowPointerEvent(event) {
@@ -89,4 +90,94 @@ export function bindBackdropClose(dim, getPanelRect, onClose) {
     return dim;
 }
 
-export default { swallowPointerEvent, guarded, createPanelShield, localRectToWorld, pointerInRect, bindBackdropClose };
+/* ======================================================================
+ * THE MODAL DEPTH CONTRACT (HUD punch-through fix)
+ *
+ * Game HUD entry buttons (Hoa Các, Bí Cảnh, Linh Thú, Luyện Đan, Câu Cá)
+ * sit at LAYERS.HUD_BUTTONS (2000). Every modal then owns three strictly
+ * higher, scene-level tiers — they MUST be top-level display objects, not
+ * children of one container, because only scene depth can order them:
+ *
+ *   LAYERS.MODAL_BLOCKER (9000)  full-screen dark backdrop, interactive —
+ *                                a click can never fall through to the HUD
+ *   LAYERS.MODAL_WINDOW (9500)   the modal window (panel + widgets)
+ *   LAYERS.MODAL_CLOSE (9999)    the close button (always on top)
+ * ==================================================================== */
+
+/**
+ * Full-screen interactive dark blocker at LAYERS.MODAL_BLOCKER (9000).
+ * Starts hidden; pair it with showModalChrome()/hideModalChrome().
+ */
+export function createModalBlocker(scene, { x, y, width, height, color = 0x05030c, alpha = 0.8 } = {}) {
+    const blocker = scene.add.rectangle(x, y, width, height, color, alpha)
+        .setDepth(LAYERS.MODAL_BLOCKER)
+        .setInteractive();
+    blocker.setVisible(false);
+    return blocker;
+}
+
+/** Top-level modal close button plate at LAYERS.MODAL_CLOSE (9999). Starts hidden. */
+export function makeCloseLayer(scene, closeObject) {
+    closeObject.setDepth(LAYERS.MODAL_CLOSE);
+    closeObject.setVisible(false);
+    return closeObject;
+}
+
+/**
+ * Reveal the modal trio (blocker → window → close) with the standard choreo:
+ * the blocker fades in, the window pops from `popScale`, the close button
+ * fades in on top. Safe against interrupted tweens (kills them first).
+ */
+export function showModalChrome(scene, chrome, { duration = 240, popScale = 0.94, ease = 'Back.easeOut' } = {}) {
+    const parts = [chrome.blocker, chrome.window, chrome.close].filter(Boolean);
+    scene.tweens.killTweensOf(parts);
+    if (chrome.blocker) {
+        chrome.blocker.setVisible(true).setAlpha(0);
+        scene.tweens.add({ targets: chrome.blocker, alpha: 1, duration: Math.min(duration, 220) });
+    }
+    if (chrome.window) {
+        chrome.window.setVisible(true).setAlpha(0);
+        if (popScale) chrome.window.setScale(popScale);
+        const props = { alpha: 1 };
+        if (popScale) props.scale = 1;
+        scene.tweens.add({ targets: chrome.window, ...props, duration, ease });
+    }
+    if (chrome.close) {
+        chrome.close.setVisible(true).setAlpha(0);
+        scene.tweens.add({ targets: chrome.close, alpha: 1, duration: Math.min(duration, 200) });
+    }
+}
+
+/**
+ * Hide the modal trio. `onHidden` fires once the window has fully folded away
+ * (the moment callers traditionally treat as "closed").
+ */
+export function hideModalChrome(scene, chrome, { duration = 200, popScale = 0.94, onHidden } = {}) {
+    const parts = [chrome.blocker, chrome.window, chrome.close].filter(Boolean);
+    scene.tweens.killTweensOf(parts);
+    const tail = [chrome.blocker, chrome.close].filter(Boolean);
+    if (tail.length) {
+        scene.tweens.add({
+            targets: tail,
+            alpha: 0,
+            duration,
+            onComplete: () => tail.forEach((o) => o.setVisible(false)),
+        });
+    }
+    if (chrome.window) {
+        const props = { alpha: 0 };
+        if (popScale) props.scale = popScale;
+        scene.tweens.add({
+            targets: chrome.window,
+            ...props,
+            duration,
+            onComplete: () => {
+                chrome.window.setVisible(false);
+                if (popScale) chrome.window.setScale(1);
+                onHidden?.();
+            },
+        });
+    }
+}
+
+export default { swallowPointerEvent, guarded, createPanelShield, localRectToWorld, pointerInRect, bindBackdropClose, createModalBlocker, makeCloseLayer, showModalChrome, hideModalChrome };

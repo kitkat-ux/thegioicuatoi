@@ -24,7 +24,10 @@ import { EVENTS } from '../systems/EventManager.js';
 import { DIALOG_FONT } from '../systems/DialogSystem.js';
 import { BEAST_ASSETS } from '../data/BeastAssetManifest.js';
 import { BEAST_DEFAULTS, createBeastRuntimeState } from '../systems/BeastSystem.js';
-import { bindBackdropClose, createPanelShield, guarded, localRectToWorld } from './modalInput.js';
+import {
+    bindBackdropClose, createModalBlocker, createPanelShield, guarded,
+    hideModalChrome, localRectToWorld, makeCloseLayer, showModalChrome,
+} from './modalInput.js';
 
 const STAGE_W = 1080;
 const STAGE_H = 1920;
@@ -125,12 +128,16 @@ export class BeastModal {
         const s = this.scene;
         const T = BEAST_THEME;
 
-        this.root = s.add.container(STAGE_W / 2, STAGE_H / 2).setDepth(LAYERS.BEAST).setVisible(false);
+        /* modal depth contract (HUD punch-through fix, see modalInput.js):
+           blocker 9000 · window 9500 (this root) · close 9999 */
+        this.root = s.add.container(STAGE_W / 2, STAGE_H / 2).setDepth(LAYERS.MODAL_WINDOW).setVisible(false);
 
         /* backdrop — tap OUTSIDE the panel closes; inside taps are swallowed */
-        const shade = s.add.rectangle(0, 0, STAGE_W, STAGE_H, 0x05030c, 0.8).setInteractive();
-        bindBackdropClose(shade, () => this.getPanelWorldRect(), () => this.close());
-        this.dim = shade;
+        this.dim = createModalBlocker(s, {
+            x: STAGE_W / 2, y: STAGE_H / 2, width: STAGE_W, height: STAGE_H,
+            color: 0x05030c, alpha: 0.8,
+        });
+        bindBackdropClose(this.dim, () => this.getPanelWorldRect(), () => this.close());
 
         /* panel frame — ink + gold (dark Guofeng) */
         const panel = s.add.graphics();
@@ -156,10 +163,10 @@ export class BeastModal {
             fontSize: '21px', color: T.textMuted,
         }).setOrigin(0.5);
 
-        /* close */
-        this.closeButton = text(s, W / 2 - 50, -H / 2 + 44, '✕', {
+        /* close — top-level at LAYERS.MODAL_CLOSE (9999), world-positioned */
+        this.closeButton = makeCloseLayer(s, text(s, STAGE_W / 2 + W / 2 - 50, STAGE_H / 2 - H / 2 + 44, '✕', {
             fontFamily: 'Arial', fontSize: '40px', color: '#ffb0b0', fontStyle: 'bold',
-        }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+        }).setOrigin(0.5).setInteractive({ useHandCursor: true }));
         this.closeButton.on('pointerdown', guarded(() => this.close()));
 
         /* tab row (one pill per beast) — replaces the stacked slot layout */
@@ -269,10 +276,12 @@ export class BeastModal {
             fontSize: '17px', color: '#8f7fa8', fontStyle: 'italic',
         }).setOrigin(0.5);
 
-        /* assemble — order matters: shade → panel → shield → widgets */
+        /* assemble — order matters: panel → shield → widgets.
+           The blocker (this.dim, 9000) and close button (9999) are TOP-LEVEL
+           display objects under the modal depth contract — never parented. */
         this.root.add([
-            shade, panel, this.panelShield,
-            this.title, this.subtitle, this.closeButton,
+            panel, this.panelShield,
+            this.title, this.subtitle,
             this.tabRow, this.prevArrow, this.nextArrow,
             this.stage, this.dots,
             this.beastName, this.rarityBadge,
@@ -650,9 +659,8 @@ export class BeastModal {
     open() {
         if (this.opened) return this;
         this.opened = true;
-        this.root.setVisible(true).setAlpha(0).setScale(0.96);
-        this.scene.tweens.killTweensOf(this.root);
-        this.scene.tweens.add({ targets: this.root, alpha: 1, scale: 1, duration: 260, ease: 'Back.easeOut' });
+        showModalChrome(this.scene, { blocker: this.dim, window: this.root, close: this.closeButton },
+            { duration: 260, popScale: 0.96 });
         this.updateCooldowns();
         this._cooldownTimer?.remove();
         this._cooldownTimer = this.scene.time.addEvent({ delay: 500, loop: true, callback: () => this.updateCooldowns() });
@@ -665,11 +673,8 @@ export class BeastModal {
         this.opened = false;
         this._cooldownTimer?.remove();
         this._cooldownTimer = null;
-        this.scene.tweens.killTweensOf(this.root);
-        this.scene.tweens.add({
-            targets: this.root, alpha: 0, scale: 0.97, duration: 190, ease: 'Quad.easeIn',
-            onComplete: () => this.root?.setVisible(false).setScale(1),
-        });
+        hideModalChrome(this.scene, { blocker: this.dim, window: this.root, close: this.closeButton },
+            { duration: 190, popScale: 0.97 });
         this.audio?.click?.(0);
         return this;
     }
@@ -682,7 +687,10 @@ export class BeastModal {
         this.disposers.forEach((off) => off());
         this._cooldownTimer?.remove();
         this._cooldownTimer = null;
+        this.dim?.destroy();
+        this.closeButton?.destroy();
         this.root?.destroy(true);
+        this.dim = this.closeButton = null;
         this.opened = false;
     }
 }

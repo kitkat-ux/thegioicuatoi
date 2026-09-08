@@ -185,7 +185,7 @@ export const REALM_SEEDS = [
     // Frost Realm — third exclusive seed (reaches 10 total across 5 realms)
     {
         id: 'flower_bach_tuong',
-        sprite_key: 'flower_bach_tuong',
+        sprite_key: 'seed_bach_tuong', // keyed sprite art (public/assets/plants/)
         name: 'Bạch Tượng',
         english: 'Ice Statue Bloom',
         colorName: 'Băng · Ice',
@@ -199,7 +199,7 @@ export const REALM_SEEDS = [
     // Nether Realm
     {
         id: 'flower_dacuc_daxa',
-        sprite_key: 'flower_dacuc_daxa',
+        sprite_key: 'seed_da_da_cuc', // keyed sprite art (public/assets/plants/)
         name: 'Dạ Dạ Cúc',
         english: 'Night Crocus',
         colorName: 'Đêm · Night',
@@ -212,7 +212,7 @@ export const REALM_SEEDS = [
     },
     {
         id: 'flower_huyen_phi',
-        sprite_key: 'flower_huyen_phi',
+        sprite_key: 'seed_huyen_phi_hoa', // keyed sprite art (public/assets/plants/)
         name: 'Huyền Phi Hoa',
         english: 'Underworld Fairy Flower',
         colorName: 'Huyền · Underworld',

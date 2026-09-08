@@ -9,7 +9,10 @@ import { FISHING_ASSET_MANIFEST, FISHING_TEXTURES } from '../data/FishingAssetMa
 import { LAYERS } from '../core/Layers.js';
 import { EVENTS } from '../systems/EventManager.js';
 import { DIALOG_FONT } from '../systems/DialogSystem.js';
-import { bindBackdropClose, createPanelShield, guarded, localRectToWorld } from './modalInput.js';
+import {
+    bindBackdropClose, createModalBlocker, createPanelShield, guarded,
+    hideModalChrome, localRectToWorld, makeCloseLayer, showModalChrome,
+} from './modalInput.js';
 
 const W = FISHING_ASSET_MANIFEST.stage.width;
 const H = FISHING_ASSET_MANIFEST.stage.height;
@@ -65,11 +68,15 @@ export class FishingModal {
     create() {
         if (this.root) return this;
         const s = this.scene;
-        this.root = s.add.container(0, 0).setDepth(LAYERS.FISHING).setVisible(false).setAlpha(0);
+        /* modal depth contract (HUD punch-through fix, see modalInput.js):
+           blocker 9000 · window 9500 (this root) · close 9999 */
+        this.root = s.add.container(0, 0).setDepth(LAYERS.MODAL_WINDOW).setVisible(false).setAlpha(0);
 
         // Backdrop: tap OUTSIDE the pier panel closes. Taps inside the panel
         // are swallowed by the guard + the panel shield below (mobile fix).
-        const dim = s.add.rectangle(W / 2, H / 2, W, H, 0x070512, 0.78).setInteractive();
+        const dim = createModalBlocker(s, {
+            x: W / 2, y: H / 2, width: W, height: H, color: 0x070512, alpha: 0.78,
+        });
         bindBackdropClose(dim, () => this.getPanelWorldRect(), () => this.close());
 
         const frame = s.add.graphics();
@@ -92,9 +99,10 @@ export class FishingModal {
             fontSize: '23px', color: COLORS.muted, fontStyle: 'italic',
         }).setOrigin(0.5);
 
-        const closeButton = addText(s, P.x + P.w - 46, P.y + 49, '✕', {
+        // close ✕ — top-level at LAYERS.MODAL_CLOSE (9999)
+        const closeButton = makeCloseLayer(s, addText(s, P.x + P.w - 46, P.y + 49, '✕', {
             fontFamily: 'Arial', fontSize: '40px', color: '#ffcfb0',
-        }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+        }).setOrigin(0.5).setInteractive({ useHandCursor: true }));
         closeButton.on('pointerdown', guarded(() => this.close()));
 
         const status = s.add.container(P.x + 158, P.y + 178);
@@ -158,8 +166,11 @@ export class FishingModal {
             fontSize: '18px', color: '#9381b2', fontStyle: 'italic', align: 'center',
         }).setOrigin(0.5);
 
-        this.parts = { dim, frame, shield, title, subtitle, closeButton, status, sceneFrame, pier, vignette, rod, bobber, goldFish, blueFish, waterLabel, lowerRule, gauge, gaugeLabel, gaugeHint, castButton, hint };
+        // dim (blocker 9000) + closeButton (9999) are TOP-LEVEL objects now —
+        // they must never be parented into the 9500 window container.
+        this.parts = { frame, shield, title, subtitle, status, sceneFrame, pier, vignette, rod, bobber, goldFish, blueFish, waterLabel, lowerRule, gauge, gaugeLabel, gaugeHint, castButton, hint };
         this.dim = dim;
+        this.closeButton = closeButton;
         this.panelShield = shield;
         this.root.add(Object.values(this.parts));
         this.startMockAnimations();
@@ -237,10 +248,9 @@ export class FishingModal {
     open() {
         if (!this.root) this.create();
         this.opened = true;
-        this.root.setVisible(true).setAlpha(0).setScale(0.94);
         this.startMockAnimations();
-        this.scene.tweens.killTweensOf(this.root);
-        this.scene.tweens.add({ targets: this.root, alpha: 1, scale: 1, duration: 300, ease: 'Back.easeOut' });
+        showModalChrome(this.scene, { blocker: this.dim, window: this.root, close: this.closeButton },
+            { duration: 300, popScale: 0.94 });
         return this;
     }
 
@@ -248,15 +258,8 @@ export class FishingModal {
         if (!this.root || !this.opened) return this;
         this.opened = false;
         this.stopMockAnimations();
-        this.scene.tweens.killTweensOf(this.root);
-        this.scene.tweens.add({
-            targets: this.root,
-            alpha: 0,
-            scale: 0.96,
-            duration: 190,
-            ease: 'Cubic.easeIn',
-            onComplete: () => this.root?.setVisible(false).setScale(1),
-        });
+        hideModalChrome(this.scene, { blocker: this.dim, window: this.root, close: this.closeButton },
+            { duration: 190, popScale: 0.96 });
         this.audio?.click?.();
         this.onClose?.();
         return this;
@@ -273,8 +276,11 @@ export class FishingModal {
 
     destroy() {
         this.stopMockAnimations();
-        this.scene.tweens.killTweensOf(this.root);
+        this.scene.tweens.killTweensOf([this.dim, this.closeButton, this.root].filter(Boolean));
+        this.dim?.destroy();
+        this.closeButton?.destroy();
         this.root?.destroy(true);
+        this.dim = this.closeButton = null;
         this.root = null;
         this.parts = null;
         this.opened = false;
